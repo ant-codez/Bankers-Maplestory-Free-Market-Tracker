@@ -56,3 +56,10 @@ assert read_at == [], "served from the cache"
 dy = boxes[2][1] - boxes[0][1]
 assert again == (first[0], (first[1][0], first[1][1] + dy, first[1][2], first[1][3] + dy), first[2]), again
 print("row cache OK")
+
+# a double quote is drawn as two ' glyphs, and "rt" in "Shirt" touch (one unknown
+# glyph): fixtures/store_quotes_2x.png's last row is Black "Hit Me" Shirt
+quotes = Image.open(ROOT / "tests" / "fixtures" / "store_quotes_2x.png").convert("RGB")
+mfm._Dictionary.cache = mfm._Dictionary(['Black "Hit Me" Shirt', "Black Hat", "Black Shirt"])
+assert mfm.glyph_name(quotes, boxes[5], col_x) == 'Black "Hit Me" Shirt'
+print("quotes OK")

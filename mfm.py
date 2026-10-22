@@ -2806,6 +2806,12 @@ _ALIKE = str.maketrans("I|", "ll")      # drawn the same in the store's font
 _NAME_INDEX: dict = {}
 
 
+def _flat(name: str) -> str:
+    """A name as its glyphs spell it: no spaces (one can be narrow), I as l, and a
+    double quote as the two ' glyphs it's drawn with (Black "Hit Me" Shirt)."""
+    return name.replace(" ", "").replace('"', "''").translate(_ALIKE)
+
+
 def name_glyphs(img: Image.Image, box: tuple, col_x: int) -> list[str]:
     """A row's name line as glyph keys, left to right: the shape and where its bottom
     sits against the line's baseline ("p" hangs below it, "'" sits above). The line's
@@ -2828,7 +2834,7 @@ def _name_index() -> dict:
     if _NAME_INDEX.get("of") is not names:
         idx: dict = {}
         for n in names:
-            idx.setdefault(n.replace(" ", "").translate(_ALIKE), []).append(n)
+            idx.setdefault(_flat(n), []).append(n)
         _NAME_INDEX.clear()
         _NAME_INDEX.update(of=names, idx=idx)
     return _NAME_INDEX["idx"]
@@ -2847,12 +2853,13 @@ def glyph_name(img: Image.Image, box: tuple, col_x: int) -> str | None:
     if not chars:
         return None
     idx = _name_index()
-    if None not in chars and not cut:
-        hits = idx.get("".join(chars), [])
-    else:
-        rx = re.compile("".join(".{1,3}" if c is None else re.escape(c) for c in chars)
-                        + ("" if cut else "$"))
-        hits = [n for k, ns in idx.items() if rx.match(k) for n in ns]
+    hits = _name_hits(chars, cut, idx)
+    if not hits and not cut and chars[-1] is None:
+        # a stray shape after a whole name (the cursor, a mark at the row's edge):
+        # the name without it, if that's exactly one item
+        while chars and chars[-1] is None:
+            chars = chars[:-1]
+        hits = idx.get("".join(chars), []) if chars and None not in chars else []
     if len(hits) == 1:
         return hits[0]
     if not hits or not cut or None in chars:
@@ -2864,11 +2871,37 @@ def glyph_name(img: Image.Image, box: tuple, col_x: int) -> str | None:
     return n[:i] + "…"
 
 
+def _name_hits(chars: list, cut: bool, idx: dict) -> list[str]:
+    if None not in chars and not cut:
+        return idx.get("".join(chars), [])
+    rx = re.compile("".join(".{1,3}" if c is None else re.escape(c) for c in chars)
+                    + ("" if cut else "$"))
+    return [n for k, ns in idx.items() if rx.match(k) for n in ns]
+
+
+def _slot_name(img: Image.Image, box: tuple, col_x: int, cfg: dict, known: list[str]) -> str | None:
+    """One row's name by Tesseract, for a row whose glyphs can't settle it (a shape not
+    learned yet, a name several items fit), taught to the glyphs when it's an official
+    item. Only that row is read, and _ocr_box keeps the read by the row's pixels, so a
+    shop with one such row doesn't send every frame through Tesseract."""
+    l, t, r, b = box
+    pitch = (b - t) / 0.95
+    y = t + round(0.14 * pitch)             # the name line's top, as _read_slot takes it
+    crop = img.crop((max(0, col_x - 4), max(0, y - 6), int(img.width * 0.88),
+                     min(img.height, int(y + pitch * 0.85))))
+    lst = _read_slot(crop, img, y, pitch, col_x, cfg, known)
+    if lst is None:
+        return None
+    if _dict() and is_known_item(lst.item):
+        learn_name(img, box, col_x, lst.item)
+    return lst.item
+
+
 def learn_name(img: Image.Image, box: tuple, col_x: int, name: str) -> bool:
     """Teach the name glyphs a row whose official name is known (Tesseract read it):
     its glyphs spell the name without spaces, or, cut off, its start and "..."."""
     keys = name_glyphs(img, box, col_x)
-    flat = name.replace(" ", "").translate(_ALIKE)
+    flat = _flat(name)
     if len(keys) == len(flat):
         pairs = list(zip(keys, flat))
     elif 3 < len(keys) < len(flat) + 3 and len(set(keys[-3:])) == 1:
@@ -2885,7 +2918,7 @@ def read_shop(img: Image.Image, cfg: dict, known: list[str], with_title=True,
     store with a row the glyphs can't settle (a glyph not learned yet, a name several
     items fit) is read by Tesseract instead (_read_shop_tesseract), which teaches the
     glyphs the names and prices it confirms, so that gets rarer."""
-    frame = _read_shop_glyphs(img, known, geom) if geom else None
+    frame = _read_shop_glyphs(img, cfg, known, geom) if geom else None
     if frame is None:
         return _read_shop_tesseract(img, cfg, known, with_title, geom)
     if with_title and frame.listings:
@@ -2893,10 +2926,11 @@ def read_shop(img: Image.Image, cfg: dict, known: list[str], with_title=True,
     return frame
 
 
-def _read_shop_glyphs(img: Image.Image, known: list[str], geom: dict) -> ShopFrame | None:
+def _read_shop_glyphs(img: Image.Image, cfg: dict, known: list[str], geom: dict) -> ShopFrame | None:
     """Every row of the store by glyph shape, the rows found on the store's grid
-    (store_slots), or None if any row can't be read that way. Rows under the cursor or
-    a tooltip are `hidden`, as with Tesseract."""
+    (store_slots): a name the glyphs can't settle is read for that row alone by
+    Tesseract (_slot_name). None if a price can't be read by glyphs, or a name at all.
+    Rows under the cursor or a tooltip are `hidden`, as with Tesseract."""
     col_x = int(geom["col_x"] * img.width)
     listings, hidden = [], 0
     for box, state in store_slots(img, geom):
@@ -2906,10 +2940,14 @@ def _read_shop_glyphs(img: Image.Image, known: list[str], geom: dict) -> ShopFra
             hidden += 1
             continue
         price, price_box, name = _glyph_row(img, box, col_x)
-        if price is None or name is None:
-            return None
+        if price is None:
+            return None         # prices are only taken read exactly: Tesseract, checked twice
         sold = state == "sold"
         icon = slot_icon(img, box, col_x)
+        if name is None:
+            name = _slot_name(img, box, col_x, cfg, known)
+            if name is None:
+                return None
         item = resolve_name(normalize_name(name, known) if name.endswith("…") else name, icon, sold)
         listings.append(Listing(item, price, 1, f"{name} / {price:,} (glyphs)", sold, icon,
                                 box, price_box))
@@ -9527,6 +9565,9 @@ class Monitor:
                     # stamped with the channel now, so a frame still queued when you
                     # change channel is logged under the one it was captured on
                     if not skip:
+                        if len(frame_at) > 256:
+                            frame_at.clear()
+                        frame_at[id(imgs[0])] = at
                         frames.put((imgs[0], imgs[1], time.monotonic(), self.channel))
                     # only a scroll or the store moving / closing moves the rows: a
                     # cursor or tooltip over them doesn't, so their tint stays. Set
@@ -9547,6 +9588,7 @@ class Monitor:
         from collections import deque
         from concurrent.futures import ThreadPoolExecutor
         pending: deque = deque()
+        frame_at: dict = {}     # id(queued store image) -> where its rows were (_list_at then)
         grabber = threading.Thread(target=capture, daemon=True, name="mfm-capture")
         grabber.start()
         workers = int(self.cfg.get("ocr_workers", 3) or 0)
@@ -9580,8 +9622,11 @@ class Monitor:
                 except Exception as e:  # keep monitoring through transient failures
                     self.on_event("error", f"{type(e).__name__}: {e}")
                 n = frames.qsize() + len(pending)
-                if n == 0:
-                    self._send_tint()   # caught up: this frame is what's on screen
+                if n == 0 or frame_at.get(id(img)) == self._list_at:
+                    # caught up, or the rows are still where they were in this frame (hover
+                    # and animations queue frames but don't move them): tint now, not after
+                    # every queued frame is read
+                    self._send_tint()
                 if (n == 0) != (last_backlog == 0) or abs(n - last_backlog) >= 5:
                     last_backlog = n   # how far the OCR is behind the screen, for the GUI
                     self.on_event("backlog", {"frames": n})
