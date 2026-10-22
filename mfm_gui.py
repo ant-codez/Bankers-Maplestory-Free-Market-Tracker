@@ -1081,16 +1081,16 @@ class Overlay(tk.Toplevel):
         self.after(500, self.tick)
 
 # ------------------------------------------------------------------ deal tint
-TINT_FILL = {"DEAL": "#22c55e", "HIGH": "#ef4444"}
+TINT_FILL = {"DEAL": "#22c55e", "fair": "#f59e0b", "HIGH": "#ef4444"}
 
 
 class Tint(tk.Toplevel):
-    """Green (DEAL) and red (HIGH) see-through boxes over the store's rows in the
-    game, from the monitor's "tint" events. Clicks go through it, it never takes the
+    """Green (DEAL), orange (fair) and red (HIGH) see-through boxes over the store's
+    prices in the game, from the monitor's "tint" events. Clicks go through it, it never takes the
     focus, and screenshots leave it out (WDA_EXCLUDEFROMCAPTURE, Windows 10 2004+),
     so the monitor still reads the rows under it. Shown and hidden with ShowWindow,
     not deiconify, which would take the focus from the game."""
-    ALPHA = 0.35
+    ALPHA = 0.45        # the boxes are just the prices: a little stronger to stand out
 
     def __init__(self, app):
         super().__init__(app.root)
@@ -6378,11 +6378,12 @@ class App:
             "waiting and the channel, with Start / Stop, Next shop and the channel arrows. "
             "The Widget box in the toolbar and the widget's ✕ turn it on and off too.", cb)
         tint_on = tk.BooleanVar(value=bool(self.cfg.get("tint_on", True)))
-        cb = ttk.Checkbutton(ov_box, text="Tint deals on the shop window", variable=tint_on)
+        cb = ttk.Checkbutton(ov_box, text="Tint prices on the shop window", variable=tint_on)
         cb.pack(anchor="w")
-        tip("While a shop is open and reading has caught up: green over DEAL rows and red "
-            "over HIGH ones, on the shop in the game. Clicks go through it, and the app's "
-            "screenshots leave it out. Whole-screen reading only (Windows).", cb)
+        tip("While a shop is open and reading has caught up, each price on the shop in the "
+            "game is coloured: green for a DEAL, orange for fair, red for HIGH. Sold rows, "
+            "outliers and items with no market price are left plain. Clicks go through it, "
+            "and the app's screenshots leave it out. Whole-screen reading only (Windows).", cb)
 
         # ---- updates (under the channel picker)
         upd = ttk.LabelFrame(gen, text=" Updates ", padding=(10, 2, 10, 6))

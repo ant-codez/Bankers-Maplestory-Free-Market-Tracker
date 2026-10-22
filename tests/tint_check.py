@@ -1,6 +1,7 @@
 """Checks the deal tint's geometry: mfm.row_boxes (store rows from their name lines,
 measured on a real store at 2x: rows 80 px apart, the faded last one read 13 px
-off), and Monitor._send_tint turning DEAL / HIGH rows into screen rectangles.
+off), mfm.glyph_read's box around just the price ("25,555 mesos", not "1 for"),
+and Monitor._send_tint turning DEAL / fair / HIGH prices into screen rectangles.
 
     python tests/tint_check.py
 """
@@ -20,17 +21,32 @@ assert boxes[-1] == (14, 713, 412, 789), "faded row snapped to the row spacing"
 assert mfm.row_boxes([324], 471, 56) == [(14, 313, 412, 389)], "a lone row sized from its text"
 assert mfm.row_boxes([324], 471) == [None] and mfm.row_boxes([], 471) == []
 
+from PIL import Image  # noqa: E402
+img = Image.open(ROOT / "tests" / "fixtures" / "store_2x.png").convert("RGB")
+row = mfm.row_boxes([324 + 80 * i for i in range(6)], img.width)[0]    # "1 for 25,555 mesos"
+spans = []
+mfm.price_glyphs(img, row, 98, spans)
+price, (x0, y0, x1, y1) = mfm.glyph_read(img, row, 98)
+assert price == 25555
+assert spans[3][2] <= x0 < spans[4][0], "starts after \"for\", at the 2"     # glyphs: 1 f o r 2 ...
+assert x1 >= spans[-1][2] and x1 - x0 > 0.9 * (spans[-1][2] - spans[4][0]), "through \"mesos\""
+assert y0 > row[1] + 0.4 * (row[3] - row[1]) and y1 <= row[3], "the price line only"
+
 events = []
 m = mfm.Monitor(dict(mfm.DEFAULT_CONFIG), lambda k, p: events.append((k, p)))
 m._shop_at = ([3313, 253, 471, 832], (-2560, 0))      # store area in the capture, its origin
-deal, fair, high = (mfm.Listing("A", 1, 1, "", box=b) for b in boxes[:3])
-m.last_listings, m.last_keys = [deal, fair, high], [("A",), ("B",), ("C",)]
+ls = [mfm.Listing("A", 1, 1, "", box=b, price_box=(150, b[1] + 43, 312, b[1] + 71)) for b in boxes]
+m.last_listings, m.last_keys = ls, [(k,) for k in "ABCDEF"]
 m.seen = {k: mfm.SeenListing("x", 1, 1, 1, 1, v, 0, "") for k, v in
-          zip(m.last_keys, ("DEAL", "fair", "HIGH"))}
+          zip(m.last_keys, ("DEAL", "fair", "HIGH", "SOLD", "OUTLIER", "?"))}
 m._send_tint()
-assert events == [("tint", [(767, 566, 398, 76, "DEAL"), (767, 726, 398, 76, "HIGH")])], events
+assert events == [("tint", [(903, 609, 162, 28, "DEAL"), (903, 689, 162, 28, "fair"),
+                            (903, 769, 162, 28, "HIGH")])], events
 m._send_tint()
 assert len(events) == 1, "unchanged rows aren't sent again"
+ls[0].price_box = None
+m._send_tint()
+assert [r[4] for r in events[-1][1]] == ["fair", "HIGH"], "no price box: no tint"
 m.cfg["tint_on"] = False
 m._send_tint()
 assert events[-1] == ("tint", []), "turned off: cleared"

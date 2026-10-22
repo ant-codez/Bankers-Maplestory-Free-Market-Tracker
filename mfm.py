@@ -1737,6 +1737,7 @@ class Listing:
     sold: bool = False
     icon: "Image.Image | None" = None   # the item's icon, cropped from the store row
     box: tuple | None = None            # (left, top, right, bottom) of its row in the store image
+    price_box: tuple | None = None      # the same, around just "65,000 mesos" (the tint)
 
 
 @dataclass
@@ -1995,7 +1996,24 @@ def reread_row(img: Image.Image, row: Row, col_x: int, cfg: dict):
     return None
 
 
+_OCR_BOX_CACHE: dict = {}   # (mode, size, picture's hash) -> _ocr_box's lines
+
+
 def _ocr_box(box: Image.Image, cfg: dict, mode: str) -> list[list[Word]]:
+    """One row's OCR (reread_row, _read_slot). A sold or missed row doesn't change but
+    is in every frame while you scroll past it, so each row picture is read once (on
+    live frames, 19 rows had been read 52 times). Callers don't change the lines."""
+    import hashlib
+    key = (mode, box.size, hashlib.blake2b(box.tobytes(), digest_size=16).digest())
+    lines = _OCR_BOX_CACHE.get(key)
+    if lines is None:
+        if len(_OCR_BOX_CACHE) >= 1024:
+            _OCR_BOX_CACHE.clear()    # ponytail: crude bound, an LRU if a visit ever needs more
+        lines = _OCR_BOX_CACHE[key] = _ocr_box_uncached(box, cfg, mode)
+    return lines
+
+
+def _ocr_box_uncached(box: Image.Image, cfg: dict, mode: str) -> list[list[Word]]:
     ui_pause()
     import pytesseract
 
@@ -2617,10 +2635,11 @@ def _glyph_char(counts: dict | None) -> str | None:
     return max(counts, key=counts.get) if counts else None
 
 
-def price_glyphs(img: Image.Image, box: tuple, col_x: int) -> list[str]:
+def price_glyphs(img: Image.Image, box: tuple, col_x: int, spans: list | None = None) -> list[str]:
     """A row's price line ("1 for 65,000 mesos") as glyph shapes, left to right: the
     pixels clearly darker than the line's background, split at empty columns and
-    taken at the game's 1x, as "#." rows joined by "/"."""
+    taken at the game's 1x, as "#." rows joined by "/". With `spans`, each glyph's
+    (left, top, right, bottom) in the image is added to it, for the deal tint."""
     l, t, r, b = box
     pitch = (b - t) / 0.95
     scale = max(1, round(pitch / NATIVE_PITCH))
@@ -2641,15 +2660,33 @@ def price_glyphs(img: Image.Image, box: tuple, col_x: int) -> list[str]:
         ys = [y for y in range(h) if any(on[y][x0:x])]
         out.append("/".join("".join("#" if on[y][xx] else "." for xx in range(x0, x, scale))
                             for y in range(ys[0], ys[-1] + 1, scale)))
+        if spans is not None:
+            ox, oy = col_x - 4, t + round(0.5 * pitch)
+            spans.append((ox + x0, oy + ys[0], ox + x, oy + ys[-1] + 1))
     return out
 
 
 def glyph_price(img: Image.Image, box: tuple, col_x: int) -> int | None:
     """The row's price read by glyph shape, or None if any glyph of it is unknown."""
+    return glyph_read(img, box, col_x)[0]
+
+
+def glyph_read(img: Image.Image, box: tuple, col_x: int) -> tuple[int | None, tuple]:
+    """(price, price box): the price as glyph_price reads it, and the (left, top,
+    right, bottom) around "65,000 mesos" that the tint colours. Without a glyph read,
+    the price line from the text column to the row's right edge."""
     table = _glyph_table()
-    s = "".join(_glyph_char(table.get(k)) or "?" for k in price_glyphs(img, box, col_x))
-    m = re.search(r"for(\d{1,3}(?:,\d{3})*)meso", s)
-    return int(m.group(1).replace(",", "")) if m else None
+    spans: list = []
+    s = "".join(_glyph_char(table.get(k)) or "?" for k in price_glyphs(img, box, col_x, spans))
+    m = re.search(r"for((\d{1,3}(?:,\d{3})*)mesos?)", s)
+    price = int(m.group(2).replace(",", "")) if m else None
+    if not m or len(s) != len(spans):
+        l, t, r, b = box
+        pitch = (b - t) / 0.95
+        return price, (col_x, t + round(0.5 * pitch), r, t + round(0.9 * pitch))
+    on = spans[m.start(1):m.end(1)]
+    return price, (min(x[0] for x in on) - 3, min(x[1] for x in on) - 3,
+                   max(x[2] for x in on) + 3, max(x[3] for x in on) + 3)
 
 
 def learn_glyphs(img: Image.Image, box: tuple, col_x: int, price: int) -> bool:
@@ -2699,7 +2736,7 @@ def read_shop(img: Image.Image, cfg: dict, known: list[str], with_title=True,
     col_x = int(frame.geom["col_x"] * img.width)
     unread = []
     for l in frame.listings:
-        p = glyph_price(img, l.box, col_x) if l.box else None
+        p, l.price_box = glyph_read(img, l.box, col_x) if l.box else (None, None)
         if p is None:
             unread.append(l)
         else:
@@ -8953,16 +8990,17 @@ class Monitor:
             self.end_session()
 
     def _send_tint(self) -> None:
-        """The open store's DEAL / HIGH rows as screen rectangles (left, top, width,
-        height, verdict), sent to the GUI when they change. Only for a screenshot of
-        the desktop: a copy of the game's window alone has its own coordinates."""
+        """The open store's DEAL / fair / HIGH prices as screen rectangles (left, top,
+        width, height, verdict), sent to the GUI when they change: sold rows, outliers
+        and items with no market rate get none. Only for a screenshot of the desktop:
+        a copy of the game's window alone has its own coordinates."""
         rows = []
         if self.cfg.get("tint_on", True) and self._shop_at:
             (sx, sy, _, _), (ox, oy) = self._shop_at
             for key, l in zip(self.last_keys, self.last_listings):
                 s = self.seen.get(key)
-                if l.box and s and s.verdict in ("DEAL", "HIGH"):
-                    x0, y0, x1, y1 = l.box
+                if l.price_box and s and s.verdict in ("DEAL", "fair", "HIGH"):
+                    x0, y0, x1, y1 = l.price_box
                     rows.append((ox + sx + x0, oy + sy + y0, x1 - x0, y1 - y0, s.verdict))
         if rows != self._tint:
             self._tint = rows
