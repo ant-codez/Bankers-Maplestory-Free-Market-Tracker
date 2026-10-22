@@ -1,0 +1,29 @@
+"""Checks the glyph price reader on a store captured at the game's 2x (fixtures/
+store_2x.png, prices checked by eye), and that learn_glyphs refuses a misread.
+
+    python tests/glyph_check.py
+"""
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+os.environ.setdefault("XDG_DATA_HOME", tempfile.mkdtemp())
+import mfm  # noqa: E402
+from PIL import Image  # noqa: E402
+
+mfm.GLYPHS_PATH = Path(tempfile.mkdtemp()) / "glyphs.json"     # learn into a throwaway file
+img = Image.open(ROOT / "tests" / "fixtures" / "store_2x.png").convert("RGB")
+boxes = mfm.row_boxes([324 + 80 * i for i in range(6)], img.width)   # this layout's six rows
+col_x = 98
+want = [25555, 77777, 88888, 44444, 29999, 24444]               # 88,888: Tesseract at 3 read 68,888
+got = [mfm.glyph_price(img, b, col_x) for b in boxes]
+assert got == want, got
+
+# a misread can't teach a wrong digit: 77,777 told as 77,177 gives "1" a 7's shape
+assert not mfm.learn_glyphs(img, boxes[1], col_x, 77177)
+assert mfm.learn_glyphs(img, boxes[1], col_x, 77777)
+assert mfm.glyph_price(img, boxes[1], col_x) == 77777
+print("glyphs OK")

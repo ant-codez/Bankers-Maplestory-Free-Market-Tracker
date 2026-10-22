@@ -481,18 +481,55 @@ def drawn_area(cfg: dict, key: str, size=None):
     r = (cfg or {}).get(key)
     if not r:
         return None
-    if (cfg.get("area_modes") or {}).get(key, "screen") == GRAB_MODE[0]:
-        return r
     drawn_on = (cfg.get("area_sizes") or {}).get(key)
+    if (cfg.get("area_modes") or {}).get(key, "screen") == GRAB_MODE[0]:
+        # ... unless drawn on a picture of another size (the whole desktop, before
+        # only the game's monitor was read): it would be in the wrong place
+        if size is None or not drawn_on or tuple(drawn_on) == tuple(size):
+            return r
+        return None
     if size is not None and drawn_on and tuple(drawn_on) == tuple(size):
         return r
     return None
 
 
+_GAME_MON = [0.0, 0]   # when it was looked up, and the mss monitor index the game is on (0 = all)
+
+
+def _game_monitor(monitors) -> int:
+    """The mss monitor the game's window is on (half the pixels of a two-monitor desktop,
+    so twice as fast to grab), or 0 for the whole desktop when it isn't found. Looked up
+    every 5 s, not every frame."""
+    now = time.time()
+    if now - _GAME_MON[0] < 5:
+        return _GAME_MON[1] if _GAME_MON[1] < len(monitors) else 0
+    _GAME_MON[:] = [now, 0]
+    if session_type() != "windows":
+        return 0
+    title = ((CAPTURE_CFG or {}).get("game_window_title") or "MapleStory").strip().lower()
+    try:
+        with _WGRAB.lock:
+            if not _WGRAB.ready:
+                _WGRAB._setup()
+            hwnd = _WGRAB._find(title)
+            if not hwnd:
+                return 0
+            r = _WGRAB.wt.RECT()
+            _WGRAB.u.GetWindowRect(_WGRAB.c.c_void_p(hwnd), _WGRAB.c.byref(r))
+        x, y = (r.left + r.right) // 2, (r.top + r.bottom) // 2
+        for i, m in enumerate(monitors[1:], 1):
+            if m["left"] <= x < m["left"] + m["width"] and m["top"] <= y < m["top"] + m["height"]:
+                _GAME_MON[1] = i
+                return i
+    except Exception:
+        pass
+    return 0
+
+
 def grab_full_screen() -> Image.Image:
     """What the app reads: the game's window when it can be copied on its own (so it's
     read even when other windows cover it; see game_window_grab), else a screenshot of
-    the whole desktop."""
+    the monitor it's on (the whole desktop if it isn't found)."""
     cfg = CAPTURE_CFG
     if cfg.get("capture_window", True):
         img = game_window_grab(cfg)
@@ -506,7 +543,7 @@ def grab_full_screen() -> Image.Image:
         import mss  # imported lazily so `scan` works without it
 
         with mss.mss() as sct:
-            mon = sct.monitors[0]  # virtual screen spanning all monitors
+            mon = sct.monitors[_game_monitor(sct.monitors)]
             shot = sct.grab(mon)
             img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
             LAST_SCREEN_SIZE[:] = img.size
@@ -2540,22 +2577,147 @@ def _read_slot(box, img, y, pitch, col_x, cfg, known) -> Listing | None:
     return None
 
 
+# ---- prices by glyph shape --------------------------------------------------
+#
+# The store draws prices in a crisp pixel font (a price line has three colours:
+# background, text, a divider), so a price is read exactly by looking up each
+# glyph's pixels in a table of known shapes: ~1 ms a line, where Tesseract takes
+# ~300 ms a store and misreads some digits (8 as 6, 9 as 1). The table starts
+# from shapes checked by eye (ocr/glyphs.json) and learns new ones from prices
+# that two Tesseract reads agreed on (cache/glyphs.json).
+
+GLYPHS_SEED = BUNDLE / "ocr" / "glyphs.json"
+GLYPHS_PATH = CACHE_DIR / "glyphs.json"
+NATIVE_PITCH = 40           # a store row's height at the game's 1x, in pixels
+_GLYPHS: dict | None = None             # shape -> {char: times seen}
+_GLYPHS_LEARNED: dict = {}              # the part of it learned here (saved)
+_GLYPHS_LOCK = threading.Lock()
+
+
+def _glyph_table() -> dict:
+    global _GLYPHS
+    with _GLYPHS_LOCK:
+        if _GLYPHS is None:
+            table: dict = {}
+            for p in (GLYPHS_SEED, GLYPHS_PATH):
+                try:
+                    shapes = json.loads(p.read_text(encoding="utf-8"))["shapes"]
+                except (OSError, ValueError, KeyError):
+                    continue
+                for k, counts in shapes.items():
+                    for ch, n in counts.items():
+                        table.setdefault(k, {})[ch] = table.get(k, {}).get(ch, 0) + n
+                        if p == GLYPHS_PATH:
+                            _GLYPHS_LEARNED.setdefault(k, {})[ch] = n
+            _GLYPHS = table
+        return _GLYPHS
+
+
+def _glyph_char(counts: dict | None) -> str | None:
+    return max(counts, key=counts.get) if counts else None
+
+
+def price_glyphs(img: Image.Image, box: tuple, col_x: int) -> list[str]:
+    """A row's price line ("1 for 65,000 mesos") as glyph shapes, left to right: the
+    pixels clearly darker than the line's background, split at empty columns and
+    taken at the game's 1x, as "#." rows joined by "/"."""
+    l, t, r, b = box
+    pitch = (b - t) / 0.95
+    scale = max(1, round(pitch / NATIVE_PITCH))
+    line = img.crop((col_x - 4, t + round(0.5 * pitch), r, t + round(0.9 * pitch))).convert("L")
+    w, h = line.size
+    px = line.load()
+    bg = statistics.mode(line.getdata())
+    on = [[bg - px[x, y] > 40 for x in range(w)] for y in range(h)]
+    cols = [any(on[y][x] for y in range(h)) for x in range(w)]
+    out, x = [], 0
+    while x < w:
+        if not cols[x]:
+            x += 1
+            continue
+        x0 = x
+        while x < w and cols[x]:
+            x += 1
+        ys = [y for y in range(h) if any(on[y][x0:x])]
+        out.append("/".join("".join("#" if on[y][xx] else "." for xx in range(x0, x, scale))
+                            for y in range(ys[0], ys[-1] + 1, scale)))
+    return out
+
+
+def glyph_price(img: Image.Image, box: tuple, col_x: int) -> int | None:
+    """The row's price read by glyph shape, or None if any glyph of it is unknown."""
+    table = _glyph_table()
+    s = "".join(_glyph_char(table.get(k)) or "?" for k in price_glyphs(img, box, col_x))
+    m = re.search(r"for(\d{1,3}(?:,\d{3})*)meso", s)
+    return int(m.group(1).replace(",", "")) if m else None
+
+
+def learn_glyphs(img: Image.Image, box: tuple, col_x: int, price: int) -> bool:
+    """Teach the table a row whose price is known: its last glyphs are "for", the
+    price and "mesos". Taken only when that lines up one to one (each character one
+    shape, each shape one character) and contradicts nothing known, so a misread
+    can't teach a wrong digit (99,999 read as 19,999 gives "1" two shapes)."""
+    shapes = price_glyphs(img, box, col_x)
+    text = f"for{price:,}mesos"
+    if len(shapes) < len(text):
+        return False
+    pairs = list(zip(shapes[-len(text):], text))
+    by_shape: dict = {}
+    by_char: dict = {}
+    for k, ch in pairs:
+        if by_shape.setdefault(k, ch) != ch or by_char.setdefault(ch, k) != k:
+            return False
+    table = _glyph_table()
+    with _GLYPHS_LOCK:
+        if any(_glyph_char(table.get(k)) not in (None, ch) for k, ch in pairs):
+            return False
+        new = any(k not in table for k, _ in pairs)
+        for k, ch in pairs:
+            table.setdefault(k, {})[ch] = table.get(k, {}).get(ch, 0) + 1
+            _GLYPHS_LEARNED.setdefault(k, {})[ch] = _GLYPHS_LEARNED.get(k, {}).get(ch, 0) + 1
+        if new:
+            try:
+                GLYPHS_PATH.parent.mkdir(parents=True, exist_ok=True)
+                GLYPHS_PATH.write_text(json.dumps({"shapes": _GLYPHS_LEARNED}), encoding="utf-8")
+            except OSError:
+                pass
+    return True
+
+
 def read_shop(img: Image.Image, cfg: dict, known: list[str], with_title=True,
               geom: dict | None = None) -> ShopFrame:
-    """Read the store window (see _read_shop_once), and with `verify_upscale` set,
-    read it again at that upscale and keep only the rows whose price both reads
-    agree on. Each upscale misreads different digits (at 3, 88,888 as 68,888; at 2,
-    15,000 as 125,010), so on 123 checked rows the pair made no wrong price, where
-    either alone made 3-5. A row they disagree on is `unsure`: left out of this
-    frame (the shop is still open), and read again when the screen changes."""
+    """Read the store window (see _read_shop_once), with each price read again by
+    glyph shape. A price with a glyph not in the table yet is checked instead by a
+    second Tesseract read at `verify_upscale`: kept (and its glyphs learned) only
+    when both reads agree. Each upscale misreads different digits (at 3, 88,888 as
+    68,888; at 2, 15,000 as 125,010), so on 123 checked rows the pair made 1 wrong
+    price where either alone made 3-5. A row they disagree on is `unsure`: left out
+    of this frame (the shop is still open), and read again when the screen changes."""
     frame = _read_shop_once(img, cfg, known, with_title, geom)
+    if not frame.listings:
+        return frame
+    col_x = int(frame.geom["col_x"] * img.width)
+    unread = []
+    for l in frame.listings:
+        p = glyph_price(img, l.box, col_x) if l.box else None
+        if p is None:
+            unread.append(l)
+        else:
+            l.price = p
     v = int(cfg.get("verify_upscale") or 0)
-    if not v or v == cfg.get("upscale", 3) or not frame.listings:
+    if not unread or not v or v == cfg.get("upscale", 3):
         return frame
     check = _read_shop_once(img, dict(cfg, upscale=v), known, False, frame.geom).listings
-    kept = [l for l in frame.listings if any(_same_row(l, c) and c.price == l.price for c in check)]
-    frame.unsure = len(frame.listings) - len(kept)
-    frame.listings = kept
+    drop = []
+    for l in unread:
+        if any(_same_row(l, c) and c.price == l.price for c in check):
+            if l.box:
+                learn_glyphs(img, l.box, col_x, l.price)
+        else:
+            drop.append(l)
+    frame.unsure = len(drop)
+    gone = {id(l) for l in drop}        # by identity: two equal rows are two listings
+    frame.listings = [l for l in frame.listings if id(l) not in gone]
     return frame
 
 
