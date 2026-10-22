@@ -40,3 +40,19 @@ assert got == ["Emerald Earrings", "Green Icarus Cape", "Titan", "Titan", "Blue 
 # a wrong name can't be taught: "Titan" doesn't spell "Emerald Earrings"
 assert not mfm.learn_name(img, boxes[2], col_x, "Emerald Earrings")
 print("names OK")
+
+# the row cache: the same row pixels lower down (a scroll) read from the cache, with
+# the price box moved along with the row
+mfm._ROW_CACHE.clear()
+first = mfm._glyph_row(img, boxes[0], col_x)
+moved = img.copy()
+moved.paste(img.crop(boxes[0]), (boxes[2][0], boxes[2][1]))
+read_at = []
+real = mfm.glyph_read
+mfm.glyph_read = lambda *a: read_at.append(a[1]) or real(*a)
+again = mfm._glyph_row(moved, boxes[2], col_x)
+mfm.glyph_read = real
+assert read_at == [], "served from the cache"
+dy = boxes[2][1] - boxes[0][1]
+assert again == (first[0], (first[1][0], first[1][1] + dy, first[1][2], first[1][3] + dy), first[2]), again
+print("row cache OK")

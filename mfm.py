@@ -50,6 +50,7 @@ import sys
 import tempfile
 import time
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -594,6 +595,43 @@ def grab_full_screen() -> Image.Image:
         "No screenshot tool found. Install the one for your desktop:\n"
         "  grim (Hyprland, Sway), spectacle (KDE) or gnome-screenshot (GNOME)"
     )
+
+
+FULL_EVERY = 1.0   # seconds between whole-screen grabs while monitoring; the store alone in between
+
+
+def screen_rect(area, origin, size) -> dict | None:
+    """Where `area` (left, top, width, height in a screenshot's pixels) is on screen, as
+    an mss monitor dict, for a screenshot of `size` taken at `origin`. None when it isn't
+    wholly inside it: a crop there is padded black, a grab would read past the monitor."""
+    l, t, w, h = area
+    if l < 0 or t < 0 or w <= 0 or h <= 0 or l + w > size[0] or t + h > size[1]:
+        return None
+    return {"left": origin[0] + l, "top": origin[1] + t, "width": w, "height": h}
+
+
+def need_full_grab(since_full: float, area, wanted: bool = False) -> bool:
+    """Whether a monitoring frame grabs the whole screen, not just the store (5x
+    faster): every FULL_EVERY s for what looks at all of it (the minimap, megaphones,
+    the channel dialog, finding the store again), and right away when the store's spot
+    isn't known or something wants the whole picture now (`wanted`)."""
+    return since_full >= FULL_EVERY or not area or wanted
+
+
+def grab_store_area(sct, area) -> Image.Image | None:
+    """Only `area` of the latest screenshot (GRAB_MODE "screen"), grabbed again: the
+    same pixels as cropping it from a new one. None when the game's monitor isn't where
+    that screenshot was taken (it moved, or a Retina Mac, whose pixels aren't mss's
+    points): grab the whole screen instead. `sct` is the calling thread's own
+    mss.mss(), which can't be shared between threads."""
+    mon = sct.monitors[_game_monitor(sct.monitors)]
+    if [mon["left"], mon["top"]] != list(LAST_SCREEN_ORIGIN) or [mon["width"], mon["height"]] != list(LAST_SCREEN_SIZE):
+        return None
+    rect = screen_rect(area, LAST_SCREEN_ORIGIN, LAST_SCREEN_SIZE)
+    if rect is None:
+        return None
+    shot = sct.grab(rect)
+    return Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
 
 
 _GRAB_FAILED: dict = {}   # Wayland screenshot tools: failures in a row here
@@ -2681,13 +2719,13 @@ def _line_glyphs(img: Image.Image, area: tuple, scale: int) -> list[tuple]:
     """The glyphs of one line of store text in `area` (left, top, right, bottom), left
     to right, as (left, top, right, bottom, shape): the pixels clearly darker than the
     line's background, split at empty columns, the shape taken at the game's 1x as
-    "#." rows joined by "/"."""
+    "#." rows joined by "/". The pixel work is Pillow's (3.7x faster than Python loops)."""
     line = img.crop(area).convert("L")
-    w, h = line.size
-    px = line.load()
-    bg = statistics.mode(line.getdata())
-    on = [[bg - px[x, y] > 40 for x in range(w)] for y in range(h)]
-    cols = [any(on[y][x] for y in range(h)) for x in range(w)]
+    hist = line.histogram()
+    bg = hist.index(max(hist))
+    mask = line.point(lambda p: 255 if bg - p > 40 else 0)
+    cols = mask.getprojection()[0]
+    w, h = mask.size
     out, x = [], 0
     while x < w:
         if not cols[x]:
@@ -2696,10 +2734,14 @@ def _line_glyphs(img: Image.Image, area: tuple, scale: int) -> list[tuple]:
         x0 = x
         while x < w and cols[x]:
             x += 1
-        ys = [y for y in range(h) if any(on[y][x0:x])]
-        shape = "/".join("".join("#" if on[y][xx] else "." for xx in range(x0, x, scale))
-                         for y in range(ys[0], ys[-1] + 1, scale))
-        out.append((area[0] + x0, area[1] + ys[0], area[0] + x, area[1] + ys[-1] + 1, shape))
+        _, y0, _, y1 = mask.crop((x0, 0, x, h)).getbbox()
+        g = mask.crop((x0, y0, x, y1))
+        if scale > 1:
+            g = g.resize((-(-g.width // scale), -(-g.height // scale)), Image.NEAREST)
+        b, gw = g.tobytes(), g.width
+        shape = "/".join("".join("#" if b[r * gw + c] else "." for c in range(gw))
+                         for r in range(g.height))
+        out.append((area[0] + x0, area[1] + y0, area[0] + x, area[1] + y1, shape))
     return out
 
 
@@ -2863,8 +2905,7 @@ def _read_shop_glyphs(img: Image.Image, known: list[str], geom: dict) -> ShopFra
         if state == "hidden":
             hidden += 1
             continue
-        price, price_box = glyph_read(img, box, col_x)
-        name = glyph_name(img, box, col_x)
+        price, price_box, name = _glyph_row(img, box, col_x)
         if price is None or name is None:
             return None
         sold = state == "sold"
@@ -2873,6 +2914,37 @@ def _read_shop_glyphs(img: Image.Image, known: list[str], geom: dict) -> ShopFra
         listings.append(Listing(item, price, 1, f"{name} / {price:,} (glyphs)", sold, icon,
                                 box, price_box))
     return ShopFrame(listings, geom=geom, hidden=hidden)
+
+
+ROW_CACHE_SIZE = 512
+_ROW_CACHE: OrderedDict = OrderedDict()   # row pixels -> (price, price box from the row's top, name)
+_ROW_LOCK = threading.Lock()
+
+
+def _glyph_row(img: Image.Image, box: tuple, col_x: int) -> tuple:
+    """(price, price box, name) of one row by glyph shape, remembered by the row's
+    pixels (least recently used dropped first): scrolling moves the same rows up and
+    down, and on live frames 71% of row reads were of a row already read. Only full
+    reads are kept, so a row that failed is read again once Tesseract has taught it."""
+    import hashlib
+    key = (col_x, box[2] - box[0], box[3] - box[1],
+           hashlib.blake2b(img.crop(box).tobytes(), digest_size=16).digest())
+    with _ROW_LOCK:
+        hit = _ROW_CACHE.get(key)
+        if hit:
+            _ROW_CACHE.move_to_end(key)
+    if hit:
+        price, (x0, y0, x1, y1), name = hit
+        return price, (x0, box[1] + y0, x1, box[1] + y1), name
+    price, price_box = glyph_read(img, box, col_x)
+    name = glyph_name(img, box, col_x)
+    if price is not None and name is not None:
+        x0, y0, x1, y1 = price_box
+        with _ROW_LOCK:
+            _ROW_CACHE[key] = (price, (x0, y0 - box[1], x1, y1 - box[1]), name)
+            if len(_ROW_CACHE) > ROW_CACHE_SIZE:
+                _ROW_CACHE.popitem(last=False)
+    return price, price_box, name
 
 
 def _read_shop_tesseract(img: Image.Image, cfg: dict, known: list[str], with_title=True,
@@ -9243,13 +9315,14 @@ class Monitor:
             self._tint = rows
             self.on_event("tint", rows)
 
-    def _hide_own_windows(self, full: Image.Image) -> None:
-        """Black out the app's own windows (own_windows) in a screenshot of the desktop.
+    def _hide_own_windows(self, full: Image.Image, at=None) -> None:
+        """Black out the app's own windows (own_windows) in a screenshot of the desktop,
+        or of the part of it whose top left is `at` on screen (the store grabbed alone).
         A copy of the game's window alone (GRAB_MODE "window") never shows them, and
         has its own coordinates: left as it is."""
         if GRAB_MODE[0] != "screen":
             return
-        ox, oy = LAST_SCREEN_ORIGIN
+        ox, oy = at or LAST_SCREEN_ORIGIN
         for l, t, w, h in self.own_windows():
             x0, y0 = max(0, l - ox), max(0, t - oy)
             x1, y1 = min(full.width, l - ox + w), min(full.height, t - oy + h)
@@ -9363,31 +9436,65 @@ class Monitor:
         BACKLOG_BIG_CHANGE = 40          # of the 576 bits of frame_hash: a scroll or another shop
 
         def capture() -> None:
+            """Grabs a frame every interval_seconds. On a screenshot of the desktop most
+            frames grab only the store (~4 ms instead of ~25 ms for a 1440p monitor):
+            the whole screen is grabbed every FULL_EVERY s, and right away when the
+            store's spot isn't known, its monitor moved or it stopped looking like a
+            store (closed, or moved: found again on the whole screen)."""
             last_h, last_imgs, same = None, None, 0
             repeats = max(self.cfg["confirm_frames"], self.cfg["close_frames"]) + 2
+            sct = None              # this thread's own mss, for the store alone; a new one after each full grab
+            full_t = -FULL_EVERY    # when the whole screen was last grabbed
+            shop_r = map_r = map_img = None   # from the last whole-screen grab
+            was_store = False
             while not stop_event.is_set():
                 t0 = time.perf_counter()
                 try:
-                    full = grab_full_screen()
-                    self._hide_own_windows(full)
-                    latest["full"] = full
-                    if self.cfg.get("channel_prompt") and self.chan_watch.due():
+                    img = None   # the store, grabbed alone
+                    if GRAB_MODE[0] == "screen" and session_type() in ("windows", "x11", "macos") \
+                            and not need_full_grab(t0 - full_t, shop_r, self.megaphones.due() or bool(
+                                self.cfg.get("channel_prompt") and self.chan_watch.seen)):
                         try:
-                            if self.chan_watch.feed(full):
-                                self.on_event("channel_change", self.chan_watch.channel)
-                            elif self.chan_watch.take_cancelled():
-                                self.on_event("channel_cancel", None)
-                        except Exception as e:
-                            self.on_event("error", f"channel check failed: {type(e).__name__}: {e}")
-                    if self.megaphones.due():
-                        self.megaphones.offer(full)
-                    shop_r, map_r = self.regions_for(full)
+                            import mss
+                            sct = sct or mss.mss()
+                            img = grab_store_area(sct, shop_r)
+                        except Exception:
+                            sct = img = None   # the whole screen instead, whose errors are reported
+                        if img is not None:
+                            self._hide_own_windows(img, (LAST_SCREEN_ORIGIN[0] + shop_r[0],
+                                                         LAST_SCREEN_ORIGIN[1] + shop_r[1]))
+                            store = is_store_window(img)
+                            if was_store and not store:
+                                img = None   # closed or moved: look on the whole screen now
+                            was_store = store
+                    if img is None:
+                        if sct is not None:
+                            sct.close()   # a new one next time: a fresh list of monitors
+                            sct = None
+                        full = grab_full_screen()
+                        full_t = t0
+                        self._hide_own_windows(full)
+                        latest["full"] = full
+                        if self.cfg.get("channel_prompt") and self.chan_watch.due():
+                            try:
+                                if self.chan_watch.feed(full):
+                                    self.on_event("channel_change", self.chan_watch.channel)
+                                elif self.chan_watch.take_cancelled():
+                                    self.on_event("channel_cancel", None)
+                            except Exception as e:
+                                self.on_event("error", f"channel check failed: {type(e).__name__}: {e}")
+                        if self.megaphones.due():
+                            self.megaphones.offer(full)
+                        shop_r, map_r = self.regions_for(full)
+                        img, map_img = crop(full, shop_r), crop(full, map_r)
+                        was_store = img is not None and GRAB_MODE[0] == "screen" and is_store_window(img)
+                    # store-only frames reuse the last map crop: the map watcher has its own thread
                     self._shop_at = (shop_r, tuple(LAST_SCREEN_ORIGIN)) \
                         if shop_r and GRAB_MODE[0] == "screen" else None
                     if shop_r is None:
                         imgs = (blank, None)   # no store window anywhere: counts as closed
                     else:
-                        imgs = (crop(full, shop_r), crop(full, map_r))
+                        imgs = (img, map_img)
                     at = None
                     if shop_r is not None:
                         thumb = scroll_thumb(imgs[0])
@@ -9433,6 +9540,8 @@ class Monitor:
                     self.on_event("error", f"{type(e).__name__}: {e}")
                 wait = self.cfg["interval_seconds"] - (time.perf_counter() - t0)
                 stop_event.wait(max(wait, 0.02))
+            if sct is not None:
+                sct.close()
 
         # frames behind the one being read are OCR'd ahead by a pool (see _prefetch)
         from collections import deque
