@@ -4728,6 +4728,8 @@ class App:
                              command=lambda: self.open_history(t))
             menu.add_command(label="Look up on meowdb", state="normal" if n == 1 else "disabled",
                              command=lambda: self.open_meowdb(t))
+            menu.add_command(label="Look up on MesoWatch", state="normal" if n == 1 else "disabled",
+                             command=lambda: self.open_mesowatch(t))
             menu.tk_popup(e.x_root, e.y_root)
         bind_right_click(t, popup)
 
@@ -4997,6 +4999,7 @@ class App:
             menu.add_command(label="Show shop photo", command=lambda: self.show_shot_for(tree),
                              state="normal" if one and self._listing_of(tree, rows[0]) else "disabled")
             menu.add_command(label="Look up on meowdb", state=single, command=lambda: self.open_meowdb(tree))
+            menu.add_command(label="Look up on MesoWatch", state=single, command=lambda: self.open_mesowatch(tree))
             menu.add_separator()
             menu.add_command(label="Watch this item" if len(items) == 1 else f"Watch these {len(items)} items",
                              command=lambda: self.alert_from_table(tree))
@@ -5156,6 +5159,13 @@ class App:
         sel = tree.selection()
         if sel:
             webbrowser.open(mfm.meowdb_url(tree.set(sel[0], "item")))
+
+    def open_mesowatch(self, tree):
+        import webbrowser
+
+        sel = tree.selection()
+        if sel:
+            webbrowser.open(mfm.mesowatch_url(tree.set(sel[0], "item")))
 
     def import_item_list(self, parent=None):
         return self._import_game_data("items", parent)
@@ -6781,7 +6791,11 @@ class App:
         def lookup():
             import webbrowser
             webbrowser.open(mfm.meowdb_url(item))
+        def lookup_mesowatch():
+            import webbrowser
+            webbrowser.open(mfm.mesowatch_url(item))
         ttk.Button(head, text="Look up on meowdb", command=lookup).pack(side="right")
+        ttk.Button(head, text="Look up on MesoWatch", command=lookup_mesowatch).pack(side="right", padx=(0, 6))
         summary = ttk.Label(win, padding=(12, 0))
         summary.pack(anchor="w")
         legend = ttk.Label(win, padding=(12, 0), foreground="#777")

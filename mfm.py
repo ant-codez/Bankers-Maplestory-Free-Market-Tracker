@@ -5629,6 +5629,24 @@ def meowdb_url(item: str) -> str:
     return f"https://duckduckgo.com/?q={q}"
 
 
+def mesowatch_url(item: str) -> str:
+    """Link to the item on MesoWatch (?item=<8-digit game id>), the id being the
+    meowdb icon key; without one, a site search for the name."""
+    import urllib.parse
+
+    icons = {}
+    if ITEM_ICONS_PATH.exists():
+        try:
+            icons = json.loads(ITEM_ICONS_PATH.read_text(encoding="utf-8"))
+        except ValueError:
+            icons = {}
+    key = str(icons.get(item) or "")
+    if key.isdigit():
+        return f"https://meso.watch/?item={int(key):08d}"
+    q = urllib.parse.quote_plus(f'site:meso.watch "{item.rstrip("…")}"')
+    return f"https://duckduckgo.com/?q={q}"
+
+
 class _Dictionary:
     """Official item names (items.txt) plus your reference prices, with a word
     index so fuzzy lookups only compare against plausible candidates."""
@@ -6930,6 +6948,8 @@ class SeenListing:
 # player's name:  [04:01] PlayerName [CH07] : message   (the time is UTC).
 
 CHAT_BTN_LO, CHAT_BTN_HI = (35, 65, 100), (72, 108, 142)
+# the scroll bar's left edge: white on some setups, light grey (215-221) on others
+CHAT_EDGE_MIN = 210
 
 
 def find_chat(full: Image.Image) -> list | None:
@@ -6965,15 +6985,15 @@ def find_chat(full: Image.Image) -> list | None:
         edge = None
         ys = range(max(0, y - 4 * h), max(0, y - h), 2)
         for x in range(max(0, cyan - 2 * h), min(W, cyan + 2 * h)):
-            if ys and all(min(px[x, yy]) >= 240 for yy in ys):
+            if ys and all(min(px[x, yy]) >= CHAT_EDGE_MIN for yy in ys):
                 edge = x
                 break
         if edge is None:
             continue
         top = bot = max(0, y - h)
-        while top > 0 and min(px[edge, top - 1]) >= 235:
+        while top > 0 and min(px[edge, top - 1]) >= CHAT_EDGE_MIN - 5:
             top -= 1
-        while bot < H - 1 and min(px[edge, bot + 1]) >= 235:
+        while bot < H - 1 and min(px[edge, bot + 1]) >= CHAT_EDGE_MIN - 5:
             bot += 1
         left = max(0, b[0] - int(0.2 * h))
         if bot - top < h or edge - left < 6 * h:
