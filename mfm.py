@@ -7573,6 +7573,7 @@ class SeenListing:
     seller: str = ""        # the player selling
     id: int | None = None   # its row in the price database
     notes: str = ""         # your note on this listing (e.g. "+5 ATK")
+    low_outlier: bool = False   # priced far below everything else seen (the tint's dark green)
 
 
 # --------------------------------------------------------------------------- megaphones
@@ -9211,8 +9212,8 @@ class Monitor:
     def _log(self, key: tuple, listing: Listing):
         each = listing.price
         mkt, _ = market_rate(self.con, listing.item, self.cfg)
-        v, pct = verdict(each, mkt, self.cfg["deal_threshold_pct"],
-                         outlier_bounds(self.con, listing.item, self.cfg))
+        bounds = outlier_bounds(self.con, listing.item, self.cfg)
+        v, pct = verdict(each, mkt, self.cfg["deal_threshold_pct"], bounds)
         ts = utc_at(self._now)          # when the frame was captured, not when it was read
         info: dict = {}
         status = log_listing(self.con, listing, self.title, self.seller, self.map, self.frame_channel,
@@ -9222,7 +9223,8 @@ class Monitor:
         s = SeenListing(listing.item, listing.price, listing.qty, each, mkt,
                         "SOLD" if listing.sold else v, pct, ts, self.shop_name(), self.map,
                         listing.sold, status, self.frame_channel, self.title or "", self.seller or "",
-                        info.get("id"), info.get("notes") or "")
+                        info.get("id"), info.get("notes") or "",
+                        low_outlier=bool(bounds) and each < bounds[0])
         self.seen[key] = s
         self.on_event("new", s)
 
@@ -9366,9 +9368,9 @@ class Monitor:
             self.end_session()
 
     def _send_tint(self) -> None:
-        """The open store's DEAL / fair / HIGH prices as screen rectangles (left, top,
-        width, height, verdict), sent to the GUI when they change: sold rows, outliers
-        and items with no market rate get none. Only for a screenshot of the desktop:
+        """The open store's prices as screen rectangles (left, top, width, height,
+        verdict: DEAL / fair / HIGH / OUTLIER / ? or LOW, an outlier far below the usual
+        price), sent to the GUI when they change; sold rows get none. Only for a screenshot of the desktop:
         a copy of the game's window alone has its own coordinates.
 
         Each row's tint is remembered by its spot in the list: a row this read left
@@ -9384,7 +9386,9 @@ class Monitor:
                     self._slots = {y: v for y, v in self._slots.items() if not span[1] <= y < span[3]}
                 s = self.seen.get(key)
                 if l.price_box and s and s.verdict in ("DEAL", "fair", "HIGH", "OUTLIER", "?"):
-                    self._slots[l.price_box[1]] = (l.price_box, s.verdict)
+                    # far below the usual price: its own colour (verdict() calls it a DEAL)
+                    tint = "LOW" if s.low_outlier and s.verdict in ("DEAL", "OUTLIER") else s.verdict
+                    self._slots[l.price_box[1]] = (l.price_box, tint)
             (sx, sy, _, _), (ox, oy) = self._shop_at
             for _, ((x0, y0, x1, y1), v) in sorted(self._slots.items()):
                 rows.append((ox + sx + x0, oy + sy + y0, x1 - x0, y1 - y0, v))

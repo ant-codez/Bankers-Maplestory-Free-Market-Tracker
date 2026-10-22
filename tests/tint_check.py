@@ -92,3 +92,13 @@ moved.paste(img.crop((415, 711, 471, 761)), (415, 463))
 moved.paste(img.crop((415, 400, 471, 450)), (415, 711))      # bare track where it was
 assert mfm.scroll_thumb(moved) == 463
 print("tint OK")
+
+# far below the usual price: dark green ("LOW"), even though verdict() calls it a DEAL
+m2 = mfm.Monitor(dict(mfm.DEFAULT_CONFIG), lambda k, p: events.append((k, p)))
+m2._shop_at = m._shop_at
+m2.last_listings, m2.last_keys = ls[:2], [("A",), ("B",)]
+m2.seen = {("A",): mfm.SeenListing("x", 1, 1, 1, 1, "DEAL", -90, "", low_outlier=True),
+           ("B",): mfm.SeenListing("x", 1, 1, 1, 1, "DEAL", -20, "")}
+m2._send_tint()
+assert [r[4] for r in events[-1][1]] == ["LOW", "DEAL"], events[-1]
+print("low outlier OK")
