@@ -125,7 +125,7 @@ def apply_fonts(root) -> str:
     return fam
 
 COLS = ("item", "each", "market", "diff", "verdict")
-HEAD = {"item": "Item", "each": "Price", "market": "Market",
+HEAD = {"item": "Item", "each": "Price", "market": "Median",
         "diff": "Diff", "verdict": "Verdict", "shop": "Shop", "player": "Player", "map": "Map",
         "channel": "Channel", "best_shop": "Shop", "best_player": "Player", "best_map": "Map",
         "best_channel": "Channel",

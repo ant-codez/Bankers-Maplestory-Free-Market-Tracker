@@ -6385,19 +6385,19 @@ def min_sightings(cfg: dict) -> int:
         return 5
 
 
-SALES_TO_BEAT_REFERENCE = 3
+MIN_SALES = 3   # the median of 2 is their average: one odd sale (godly stats, a typo) moves it
 
 
 def market_rate(con, item: str, cfg: dict) -> tuple[int | None, str]:
     """What an item is worth, in order of preference:
-    1. the median price it has actually SOLD for (2+ sales seen)
-    2. a reference price you imported (e.g. from meso.watch)
-    3. the median of everything seen, listed and sold
-    1 and 3 only once the item has `min_sightings` sightings in the history window,
-    so a listing isn't called a DEAL or HIGH against one or two prices. Your own
-    sales beat an imported price, which only gets older, but only from
-    SALES_TO_BEAT_REFERENCE sales: the median of 2 is their average, so one
-    odd sale (godly stats, a typo) could still move it."""
+    1. the median price it has actually SOLD for (MIN_SALES+ sales)
+    2. the median price it's LISTED for (`min_sightings`+ listings still for sale)
+    3. a reference price you imported (e.g. from meso.watch)
+    4. the median of everything seen, listed and sold
+    1, 2 and 4 only once the item has `min_sightings` sightings in the history
+    window, so a listing isn't called a DEAL or HIGH against one or two prices,
+    and always without outliers. Your own data beats an imported price, which
+    only gets older."""
     ref = con.execute("SELECT price, source FROM reference WHERE item = ?", (item,)).fetchone()
     need = min_sightings(cfg)
     seen = con.execute("SELECT COUNT(*) FROM listings WHERE item = ? AND COALESCE(last_seen, ts) >= ?",
@@ -6409,8 +6409,10 @@ def market_rate(con, item: str, cfg: dict) -> tuple[int | None, str]:
     bounds = outlier_bounds(con, item, cfg)
     st = price_stats(con, item, cfg, bounds)
     skipped = f", {st['outliers']} outlier{'s' if st['outliers'] != 1 else ''} ignored" if st["outliers"] else ""
-    if st["sold_n"] >= (SALES_TO_BEAT_REFERENCE if ref else 2):
+    if st["sold_n"] >= MIN_SALES:
         return st["sold_median"], f"median of {st['sold_n']} sold{skipped}"
+    if st["listed_n"] >= need:
+        return st["listed_median"], f"median of {st['listed_n']} listed{skipped}"
     if ref:
         return ref[0], ref[1] or "reference"
     since = utc_ago(days=cfg["history_days"])
