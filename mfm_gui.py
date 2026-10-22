@@ -1081,7 +1081,9 @@ class Overlay(tk.Toplevel):
         self.after(500, self.tick)
 
 # ------------------------------------------------------------------ deal tint
-TINT_FILL = {"DEAL": "#22c55e", "fair": "#f59e0b", "HIGH": "#ef4444", "?": "#7dd3fc"}   # ? = not enough data
+TINT_FILL = {"DEAL": "#22c55e", "fair": "#f59e0b", "HIGH": "#ef4444",
+             "OUTLIER": "#7f1d1d",     # far off the usual price, either way: likely a troll or a misread
+             "?": "#7dd3fc"}           # not enough data yet
 
 
 class Tint(tk.Toplevel):
@@ -6401,8 +6403,9 @@ class App:
         cb = ttk.Checkbutton(ov_box, text="Tint prices on the shop window", variable=tint_on)
         cb.pack(anchor="w")
         tip("While a shop is open and reading has caught up, each price on the shop in the "
-            "game is coloured: green for a DEAL, orange for fair, red for HIGH, light blue "
-            "for not enough data yet (?). Sold rows and outliers are left plain. Clicks go through it, "
+            "game is coloured: green for a DEAL, orange for fair, red for HIGH, dark red for "
+            "an outlier (far off the usual price either way), light blue for not enough data "
+            "yet (?). Sold rows are left plain. Clicks go through it, "
             "and the app's screenshots leave it out. Whole-screen reading only (Windows).", cb)
 
         # ---- updates (under the channel picker)

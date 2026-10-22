@@ -9383,7 +9383,7 @@ class Monitor:
                 if span:   # read this time: whatever was remembered at its spot is replaced
                     self._slots = {y: v for y, v in self._slots.items() if not span[1] <= y < span[3]}
                 s = self.seen.get(key)
-                if l.price_box and s and s.verdict in ("DEAL", "fair", "HIGH", "?"):
+                if l.price_box and s and s.verdict in ("DEAL", "fair", "HIGH", "OUTLIER", "?"):
                     self._slots[l.price_box[1]] = (l.price_box, s.verdict)
             (sx, sy, _, _), (ox, oy) = self._shop_at
             for _, ((x0, y0, x1, y1), v) in sorted(self._slots.items()):

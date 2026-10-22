@@ -41,12 +41,13 @@ m.seen = {k: mfm.SeenListing("x", 1, 1, 1, 1, v, 0, "") for k, v in
           zip(m.last_keys, ("DEAL", "fair", "HIGH", "SOLD", "OUTLIER", "?"))}
 m._send_tint()
 assert events == [("tint", [(903, 609, 162, 28, "DEAL"), (903, 689, 162, 28, "fair"),
-                            (903, 769, 162, 28, "HIGH"), (903, 1009, 162, 28, "?")])], events
+                            (903, 769, 162, 28, "HIGH"), (903, 929, 162, 28, "OUTLIER"),
+                            (903, 1009, 162, 28, "?")])], events
 m._send_tint()
 assert len(events) == 1, "unchanged rows aren't sent again"
 ls[0].price_box = None
 m._send_tint()
-assert [r[4] for r in events[-1][1]] == ["fair", "HIGH", "?"], "no price box: no tint"
+assert [r[4] for r in events[-1][1]] == ["fair", "HIGH", "OUTLIER", "?"], "no price box: no tint"
 m.cfg["tint_on"] = False
 m._send_tint()
 assert events[-1] == ("tint", []), "turned off: cleared"
@@ -58,22 +59,22 @@ m.cfg["tint_on"] = True
 ls[0].price_box = (150, boxes[0][1] + 43, 312, boxes[0][1] + 71)
 m._list_at = ((3313, 253, 471, 832), 711)
 m._send_tint()
-assert verdicts() == ["DEAL", "fair", "HIGH", "?"]
+assert verdicts() == ["DEAL", "fair", "HIGH", "OUTLIER", "?"]
 n = len(events)
 m.last_listings, m.last_keys = ls[3:], m.last_keys[3:]      # rows A-C hidden
 m._send_tint()
-assert verdicts() == ["DEAL", "fair", "HIGH", "?"] and len(events) == n, "hidden rows keep their tint"
+assert verdicts() == ["DEAL", "fair", "HIGH", "OUTLIER", "?"] and len(events) == n, "hidden rows keep their tint"
 m.seen[("G",)] = mfm.SeenListing("x", 1, 1, 1, 1, "HIGH", 0, "")
 m.last_listings, m.last_keys = [ls[0], ls[1]], [("D",), ("G",)]   # A now sold, B now HIGH
 m._send_tint()
-assert verdicts() == ["HIGH", "HIGH", "?"], "a row read again takes its new verdict, or none"
+assert verdicts() == ["HIGH", "HIGH", "OUTLIER", "?"], "a row read again takes its new verdict, or none"
 m._list_at = ((3313, 253, 471, 832), 463)                   # scrolled
 m.last_listings, m.last_keys = ls[3:], [(k,) for k in "DEF"]
 m._send_tint()
-assert verdicts() == ["?"], "a scroll forgets the remembered rows: only F, read again"
+assert verdicts() == ["OUTLIER", "?"], "a scroll forgets the remembered rows: only E, F, read again"
 m.last_listings, m.last_keys = ls, [(k,) for k in "ABCDEF"]
 m._send_tint()
-assert verdicts() == ["DEAL", "fair", "HIGH", "?"]
+assert verdicts() == ["DEAL", "fair", "HIGH", "OUTLIER", "?"]
 m.end_session()
 m._send_tint()
 assert events[-1] == ("tint", []), "a new visit forgets them too"
