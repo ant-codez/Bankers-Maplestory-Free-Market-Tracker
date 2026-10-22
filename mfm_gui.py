@@ -1081,7 +1081,7 @@ class Overlay(tk.Toplevel):
         self.after(500, self.tick)
 
 # ------------------------------------------------------------------ deal tint
-TINT_FILL = {"DEAL": "#22c55e", "fair": "#f59e0b", "HIGH": "#ef4444"}
+TINT_FILL = {"DEAL": "#22c55e", "fair": "#f59e0b", "HIGH": "#ef4444", "?": "#7dd3fc"}   # ? = not enough data
 
 
 class Tint(tk.Toplevel):
@@ -5236,11 +5236,22 @@ class App:
             webbrowser.open(mfm.meowdb_url(tree.set(sel[0], "item")))
 
     def open_mesowatch(self, tree):
-        import webbrowser
-
         sel = tree.selection()
         if sel:
-            webbrowser.open(mfm.mesowatch_url(tree.set(sel[0], "item")))
+            self.mesowatch(tree.set(sel[0], "item"))
+
+    def mesowatch(self, item: str):
+        """Open the item on MesoWatch (its own panel, by game id) with its name on the
+        clipboard: MesoWatch can't be given a search by link, and where it doesn't know
+        the item, pasting the name in its filter box finds it (it filters as you type)."""
+        import webbrowser
+
+        self.root.clipboard_clear()
+        self.root.clipboard_append(item.rstrip("…"))
+        self.root.update()               # keeps the clipboard after the window loses focus
+        webbrowser.open(mfm.mesowatch_url(item))
+        self._set_status(f"Opened '{item}' on MesoWatch. Its name is copied: if MesoWatch doesn't "
+                         "open on it, click its Filter box and press Ctrl+V.")
 
     def import_item_list(self, parent=None):
         return self._import_game_data("items", parent)
@@ -6390,8 +6401,8 @@ class App:
         cb = ttk.Checkbutton(ov_box, text="Tint prices on the shop window", variable=tint_on)
         cb.pack(anchor="w")
         tip("While a shop is open and reading has caught up, each price on the shop in the "
-            "game is coloured: green for a DEAL, orange for fair, red for HIGH. Sold rows, "
-            "outliers and items with no market price are left plain. Clicks go through it, "
+            "game is coloured: green for a DEAL, orange for fair, red for HIGH, light blue "
+            "for not enough data yet (?). Sold rows and outliers are left plain. Clicks go through it, "
             "and the app's screenshots leave it out. Whole-screen reading only (Windows).", cb)
 
         # ---- updates (under the channel picker)
@@ -6879,8 +6890,7 @@ class App:
             import webbrowser
             webbrowser.open(mfm.meowdb_url(item))
         def lookup_mesowatch():
-            import webbrowser
-            webbrowser.open(mfm.mesowatch_url(item))
+            self.mesowatch(item)
         ttk.Button(head, text="Look up on meowdb", command=lookup).pack(side="right")
         ttk.Button(head, text="Look up on MesoWatch", command=lookup_mesowatch).pack(side="right", padx=(0, 6))
         summary = ttk.Label(win, padding=(12, 0))

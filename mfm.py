@@ -6236,10 +6236,9 @@ def meowdb_url(item: str) -> str:
 
 
 def mesowatch_url(item: str) -> str:
-    """Link to the item on MesoWatch (?item=<8-digit game id>), the id being the
-    meowdb icon key; without one, a site search for the name."""
-    import urllib.parse
-
+    """Link to the item on MesoWatch (?item=<8-digit game id>, which opens its panel),
+    the id being the meowdb icon key; without one, MesoWatch itself, to filter by name
+    (it can't be given a search by link)."""
     icons = {}
     if ITEM_ICONS_PATH.exists():
         try:
@@ -6249,8 +6248,7 @@ def mesowatch_url(item: str) -> str:
     key = str(icons.get(item) or "")
     if key.isdigit():
         return f"https://meso.watch/?item={int(key):08d}"
-    q = urllib.parse.quote_plus(f'site:meso.watch "{item.rstrip("…")}"')
-    return f"https://duckduckgo.com/?q={q}"
+    return "https://meso.watch/"
 
 
 class _Dictionary:
@@ -9385,7 +9383,7 @@ class Monitor:
                 if span:   # read this time: whatever was remembered at its spot is replaced
                     self._slots = {y: v for y, v in self._slots.items() if not span[1] <= y < span[3]}
                 s = self.seen.get(key)
-                if l.price_box and s and s.verdict in ("DEAL", "fair", "HIGH"):
+                if l.price_box and s and s.verdict in ("DEAL", "fair", "HIGH", "?"):
                     self._slots[l.price_box[1]] = (l.price_box, s.verdict)
             (sx, sy, _, _), (ox, oy) = self._shop_at
             for _, ((x0, y0, x1, y1), v) in sorted(self._slots.items()):
