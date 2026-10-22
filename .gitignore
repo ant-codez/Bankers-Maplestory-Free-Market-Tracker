@@ -2,3 +2,13 @@ build/
 dist/
 __pycache__/
 *.spec
+
+# local only: the Tesseract copy used to build, and anything captured or harvested
+# while playing (store captures, price exports, databases), so a download starts fresh
+tesseract-official/
+tests/fixtures/store_*.png
+*.db
+*.db-shm
+*.db-wal
+prices*.csv
+market.json

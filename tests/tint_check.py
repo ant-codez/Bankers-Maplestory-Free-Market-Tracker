@@ -22,15 +22,19 @@ assert mfm.row_boxes([324], 471, 56) == [(14, 313, 412, 389)], "a lone row sized
 assert mfm.row_boxes([324], 471) == [None] and mfm.row_boxes([], 471) == []
 
 from PIL import Image  # noqa: E402
-img = Image.open(ROOT / "tests" / "fixtures" / "store_2x.png").convert("RGB")
-row = mfm.row_boxes([324 + 80 * i for i in range(6)], img.width)[0]    # "1 for 25,555 mesos"
-spans = []
-mfm.price_glyphs(img, row, 98, spans)
-price, (x0, y0, x1, y1) = mfm.glyph_read(img, row, 98)
-assert price == 25555
-assert spans[3][2] <= x0 < spans[4][0], "starts after \"for\", at the 2"     # glyphs: 1 f o r 2 ...
-assert x1 >= spans[-1][2] and x1 - x0 > 0.9 * (spans[-1][2] - spans[4][0]), "through \"mesos\""
-assert y0 > row[1] + 0.4 * (row[3] - row[1]) and y1 <= row[3], "the price line only"
+STORE = ROOT / "tests" / "fixtures" / "store_2x.png"     # a real store: kept out of the repo
+img = Image.open(STORE).convert("RGB") if STORE.exists() else None
+if img is None:
+    print("price box and scroll checks skipped: needs tests/fixtures/store_2x.png")
+else:
+    row = mfm.row_boxes([324 + 80 * i for i in range(6)], img.width)[0]    # "1 for 25,555 mesos"
+    spans = []
+    mfm.price_glyphs(img, row, 98, spans)
+    price, (x0, y0, x1, y1) = mfm.glyph_read(img, row, 98)
+    assert price == 25555
+    assert spans[3][2] <= x0 < spans[4][0], "starts after \"for\", at the 2"     # glyphs: 1 f o r 2 ...
+    assert x1 >= spans[-1][2] and x1 - x0 > 0.9 * (spans[-1][2] - spans[4][0]), "through \"mesos\""
+    assert y0 > row[1] + 0.4 * (row[3] - row[1]) and y1 <= row[3], "the price line only"
 
 events = []
 m = mfm.Monitor(dict(mfm.DEFAULT_CONFIG), lambda k, p: events.append((k, p)))
@@ -79,18 +83,19 @@ m.end_session()
 m._send_tint()
 assert events[-1] == ("tint", []), "a new visit forgets them too"
 
-# the scroll position: the thumb's top, not moved by a cursor / tooltip over the rows
-assert mfm.scroll_thumb(img) == 711
-covered = img.copy()
-covered.paste((60, 70, 140), (200, 500, 400, 832))           # a tooltip over the rows
-covered.paste((255, 255, 255), (300, 400, 330, 440))         # the cursor
-assert mfm.scroll_thumb(covered) == 711
-covered.paste((60, 70, 140), (300, 600, 471, 832))           # ... and over the thumb: unknown
-assert mfm.scroll_thumb(covered) is None
-moved = img.copy()
-moved.paste(img.crop((415, 711, 471, 761)), (415, 463))
-moved.paste(img.crop((415, 400, 471, 450)), (415, 711))      # bare track where it was
-assert mfm.scroll_thumb(moved) == 463
+if img is not None:
+    # the scroll position: the thumb's top, not moved by a cursor / tooltip over the rows
+    assert mfm.scroll_thumb(img) == 711
+    covered = img.copy()
+    covered.paste((60, 70, 140), (200, 500, 400, 832))           # a tooltip over the rows
+    covered.paste((255, 255, 255), (300, 400, 330, 440))         # the cursor
+    assert mfm.scroll_thumb(covered) == 711
+    covered.paste((60, 70, 140), (300, 600, 471, 832))           # ... and over the thumb: unknown
+    assert mfm.scroll_thumb(covered) is None
+    moved = img.copy()
+    moved.paste(img.crop((415, 711, 471, 761)), (415, 463))
+    moved.paste(img.crop((415, 400, 471, 450)), (415, 711))      # bare track where it was
+    assert mfm.scroll_thumb(moved) == 463
 print("tint OK")
 
 # far below the usual price: dark green ("LOW"), even though verdict() calls it a DEAL

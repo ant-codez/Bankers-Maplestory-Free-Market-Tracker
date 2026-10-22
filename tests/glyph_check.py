@@ -15,7 +15,11 @@ import mfm  # noqa: E402
 from PIL import Image  # noqa: E402
 
 mfm.GLYPHS_PATH = Path(tempfile.mkdtemp()) / "glyphs.json"     # learn into a throwaway file
-img = Image.open(ROOT / "tests" / "fixtures" / "store_2x.png").convert("RGB")
+STORE = ROOT / "tests" / "fixtures" / "store_2x.png"
+if not STORE.exists():      # captures of real stores (players' names) stay out of the repo
+    print("glyph checks skipped: needs a 2x store capture at tests/fixtures/store_2x.png")
+    sys.exit(0)
+img = Image.open(STORE).convert("RGB")
 boxes = mfm.row_boxes([324 + 80 * i for i in range(6)], img.width)   # this layout's six rows
 col_x = 98
 want = [25555, 77777, 88888, 44444, 29999, 24444]               # 88,888: Tesseract at 3 read 68,888
@@ -59,7 +63,11 @@ print("row cache OK")
 
 # a double quote is drawn as two ' glyphs, and "rt" in "Shirt" touch (one unknown
 # glyph): fixtures/store_quotes_2x.png's last row is Black "Hit Me" Shirt
-quotes = Image.open(ROOT / "tests" / "fixtures" / "store_quotes_2x.png").convert("RGB")
+QUOTES = ROOT / "tests" / "fixtures" / "store_quotes_2x.png"
+if not QUOTES.exists():
+    print("quotes skipped: needs tests/fixtures/store_quotes_2x.png")
+    sys.exit(0)
+quotes = Image.open(QUOTES).convert("RGB")
 mfm._Dictionary.cache = mfm._Dictionary(['Black "Hit Me" Shirt', "Black Hat", "Black Shirt"])
 assert mfm.glyph_name(quotes, boxes[5], col_x) == 'Black "Hit Me" Shirt'
 print("quotes OK")

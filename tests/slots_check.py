@@ -14,7 +14,11 @@ os.environ.setdefault("XDG_DATA_HOME", tempfile.mkdtemp())
 import mfm  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
 
-img = Image.open(ROOT / "tests" / "fixtures" / "store_2x.png").convert("RGB")
+STORE = ROOT / "tests" / "fixtures" / "store_2x.png"
+if not STORE.exists():      # captures of real stores (players' names) stay out of the repo
+    print("slot checks skipped: needs a 2x store capture at tests/fixtures/store_2x.png")
+    sys.exit(0)
+img = Image.open(STORE).convert("RGB")
 geom = {"col_x": 98 / 471, "list_top": 306 / 832}     # what read_shop learns on this store
 slots = mfm.store_slots(img, geom)
 assert [s for _, s in slots] == ["row"] * 5 + ["sold"], slots
