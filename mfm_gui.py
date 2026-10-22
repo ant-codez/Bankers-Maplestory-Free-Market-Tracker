@@ -6196,6 +6196,7 @@ class App:
             ("close_frames", "Empty frames = shop closed", 1, 20, 1),
             ("history_days", "Market median window (days)", 1, 90, 1),
             ("upscale", "OCR upscale factor", 1, 6, 1),
+            ("verify_upscale", "Second read's upscale (0 = off)", 0, 6, 1),
             ("min_sightings", "Required sightings before judging", 1, 100, 1),
             ("deal_threshold_pct", "Flag DEAL / HIGH at ± %", 1, 90, 1),
             ("outlier_ceiling_pct", "Outliers: ceiling, % above median", 10, 10000, 10),
@@ -6219,6 +6220,9 @@ class App:
                          "long (right-click a listing → Show shop photo), to check a misread name. "
                          "About 20 KB each, a few per shop visit. 0 takes none.",
             "upscale": "Raise it if small text is misread. Higher is slower.",
+            "verify_upscale": "Each shop is read again at this upscale, and a row is only used "
+                              "when both reads show the same price: different upscales misread "
+                              "different digits. About twice the reading work. 0 turns it off.",
             "min_sightings": "Sightings an item needs before it gets a market price, DEAL / HIGH "
                              "and outliers.",
             "outlier_ceiling_pct": "Prices this far above usual are left out of the market price.",

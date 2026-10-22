@@ -158,6 +158,7 @@ DEFAULT_CONFIG = {
     "outlier_floor_pct": 75,     # more than this % BELOW the median is an outlier (75 = 1/4)
     "tesseract_cmd": None,     # set if tesseract isn't on PATH (Windows)
     "upscale": 3,              # game fonts are tiny; upscaling helps OCR a lot
+    "verify_upscale": 2,       # a second read at this upscale must agree on each price (0 = off)
     "update_check": True,      # look for a new version at launch (and daily)
     "update_skip": "",         # a version you chose to skip
     "channel_prompt": True,    # ask for the channel at launch and after a channel change
@@ -1708,6 +1709,7 @@ class ShopFrame:
     seller: str = ""
     geom: dict | None = None     # learned text-column geometry (fractions of the image)
     hidden: int = 0              # rows skipped because the mouse cursor / a tooltip covered them
+    unsure: int = 0              # rows left out because the second read saw another price
 
     @property
     def shop(self) -> str:
@@ -2540,6 +2542,31 @@ def _read_slot(box, img, y, pitch, col_x, cfg, known) -> Listing | None:
 
 def read_shop(img: Image.Image, cfg: dict, known: list[str], with_title=True,
               geom: dict | None = None) -> ShopFrame:
+    """Read the store window (see _read_shop_once), and with `verify_upscale` set,
+    read it again at that upscale and keep only the rows whose price both reads
+    agree on. Each upscale misreads different digits (at 3, 88,888 as 68,888; at 2,
+    15,000 as 125,010), so on 123 checked rows the pair made no wrong price, where
+    either alone made 3-5. A row they disagree on is `unsure`: left out of this
+    frame (the shop is still open), and read again when the screen changes."""
+    frame = _read_shop_once(img, cfg, known, with_title, geom)
+    v = int(cfg.get("verify_upscale") or 0)
+    if not v or v == cfg.get("upscale", 3) or not frame.listings:
+        return frame
+    check = _read_shop_once(img, dict(cfg, upscale=v), known, False, frame.geom).listings
+    kept = [l for l in frame.listings if any(_same_row(l, c) and c.price == l.price for c in check)]
+    frame.unsure = len(frame.listings) - len(kept)
+    frame.listings = kept
+    return frame
+
+
+def _same_row(a: Listing, b: Listing) -> bool:
+    if a.box and b.box:
+        return abs(a.box[1] - b.box[1]) < 0.4 * (a.box[3] - a.box[1])
+    return a.item == b.item
+
+
+def _read_shop_once(img: Image.Image, cfg: dict, known: list[str], with_title=True,
+                    geom: dict | None = None) -> ShopFrame:
     """Read every listing in the store window, including faded (sold) ones.
 
     1. If the text-column geometry isn't known yet, a plain pass learns it.
@@ -8708,9 +8735,9 @@ class Monitor:
             self._ocr_warm = True
         ocr_ms = int((time.perf_counter() - t0) * 1000)
         self.last_hidden = frame.hidden
-        if not frame.listings and frame.hidden:
-            # every row is under the cursor/tooltip: the shop is still open, so this
-            # isn't an empty frame and the layout hasn't changed; just wait
+        if not frame.listings and (frame.hidden or frame.unsure):
+            # every row is under the cursor/tooltip, or unsure: the shop is still open,
+            # so this isn't an empty frame and the layout hasn't changed; just wait
             self.last_keys, self.last_listings = [], []
             self.on_event("frame", {"listings": [], "image": img, "ocr_ms": ocr_ms,
                                     "hidden": frame.hidden})
