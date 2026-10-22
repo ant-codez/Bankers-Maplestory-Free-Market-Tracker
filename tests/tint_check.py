@@ -50,4 +50,44 @@ assert [r[4] for r in events[-1][1]] == ["fair", "HIGH"], "no price box: no tint
 m.cfg["tint_on"] = False
 m._send_tint()
 assert events[-1] == ("tint", []), "turned off: cleared"
+
+# hovering: rows under the cursor / tooltip aren't read, but keep their colour
+# until the list scrolls (scroll_thumb) or moves, or the visit ends
+verdicts = lambda: [r[4] for r in m._tint]     # noqa: E731
+m.cfg["tint_on"] = True
+ls[0].price_box = (150, boxes[0][1] + 43, 312, boxes[0][1] + 71)
+m._list_at = ((3313, 253, 471, 832), 711)
+m._send_tint()
+assert verdicts() == ["DEAL", "fair", "HIGH"]
+n = len(events)
+m.last_listings, m.last_keys = ls[3:], m.last_keys[3:]      # rows A-C hidden
+m._send_tint()
+assert verdicts() == ["DEAL", "fair", "HIGH"] and len(events) == n, "hidden rows keep their tint"
+m.seen[("G",)] = mfm.SeenListing("x", 1, 1, 1, 1, "HIGH", 0, "")
+m.last_listings, m.last_keys = [ls[0], ls[1]], [("D",), ("G",)]   # A now sold, B now HIGH
+m._send_tint()
+assert verdicts() == ["HIGH", "HIGH"], "a row read again takes its new verdict, or none"
+m._list_at = ((3313, 253, 471, 832), 463)                   # scrolled
+m.last_listings, m.last_keys = ls[3:], [(k,) for k in "DEF"]
+m._send_tint()
+assert events[-1] == ("tint", []), "a scroll forgets the remembered rows"
+m.last_listings, m.last_keys = ls, [(k,) for k in "ABCDEF"]
+m._send_tint()
+assert verdicts() == ["DEAL", "fair", "HIGH"]
+m.end_session()
+m._send_tint()
+assert events[-1] == ("tint", []), "a new visit forgets them too"
+
+# the scroll position: the thumb's top, not moved by a cursor / tooltip over the rows
+assert mfm.scroll_thumb(img) == 711
+covered = img.copy()
+covered.paste((60, 70, 140), (200, 500, 400, 832))           # a tooltip over the rows
+covered.paste((255, 255, 255), (300, 400, 330, 440))         # the cursor
+assert mfm.scroll_thumb(covered) == 711
+covered.paste((60, 70, 140), (300, 600, 471, 832))           # ... and over the thumb: unknown
+assert mfm.scroll_thumb(covered) is None
+moved = img.copy()
+moved.paste(img.crop((415, 711, 471, 761)), (415, 463))
+moved.paste(img.crop((415, 400, 471, 450)), (415, 711))      # bare track where it was
+assert mfm.scroll_thumb(moved) == 463
 print("tint OK")

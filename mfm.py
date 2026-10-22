@@ -7184,6 +7184,27 @@ def frame_hash(img: Image.Image) -> int:
     return sum(1 << i for i, p in enumerate(px) if p > avg)
 
 
+def scroll_thumb(img: Image.Image) -> int | None:
+    """Top (store-image y) of the item list's scroll-bar thumb: where the list is
+    scrolled to. None when there's no thumb (a short list) or it's under a tooltip.
+    Read from the thumb's left border, grey-blue (119,136,153) at ~0.9 of the width,
+    which the rows, the cursor and tooltips over the rows don't have."""
+    from PIL import ImageChops
+
+    w, h = img.size
+    top = round(0.36 * h)
+    band = img.crop((round(0.895 * w), top, round(0.915 * w) + 1, h)).convert("RGB")
+    near = [c.point(lambda v, t=t: 255 if abs(v - t) <= 8 else 0)
+            for c, t in zip(band.split(), (119, 136, 153))]
+    hit = ImageChops.multiply(ImageChops.multiply(near[0], near[1]), near[2])
+    best, start, run = 0, 0, 0
+    for y, v in enumerate(hit.resize((1, hit.height), Image.BOX).tobytes()):
+        run = run + 1 if v else 0
+        if run > best:
+            best, start = run, y - run + 1
+    return top + start if best >= 0.02 * h else None   # a sliver is an arrow's edge
+
+
 @dataclass
 class SeenListing:
     item: str
@@ -8638,6 +8659,9 @@ class Monitor:
         self.own_windows = lambda: ()
         self._shop_at = None            # (store area, screen origin) of the newest capture, for the tint
         self._tint: list = []           # the DEAL / HIGH rows last sent to the GUI
+        self._list_at = None            # (store area, scroll_thumb) on screen now: where the rows are
+        self._slots: dict = {}          # row top -> (price box, verdict) at _slots_at, kept while hovered
+        self._slots_at = None
         self._frame = None              # the frame being read, for the shop photo
         self._prefetched: dict = {}     # id(frame) -> (frame, future or None, hash, geom used)
         self._pf = None                 # the entry for the frame in step()
@@ -8742,6 +8766,7 @@ class Monitor:
         self.pending.clear()
         self.pending_unmatched.clear()
         self.last_keys = []
+        self._slots = {}                 # another shop's rows: no remembered tint
         self.header_sig = None
         self.header_ref = None
 
@@ -8993,15 +9018,27 @@ class Monitor:
         """The open store's DEAL / fair / HIGH prices as screen rectangles (left, top,
         width, height, verdict), sent to the GUI when they change: sold rows, outliers
         and items with no market rate get none. Only for a screenshot of the desktop:
-        a copy of the game's window alone has its own coordinates."""
+        a copy of the game's window alone has its own coordinates.
+
+        Each row's tint is remembered by its spot in the list: a row this read left
+        out (under the cursor or a tooltip, or unsure) keeps the colour it had, until
+        the list scrolls or moves (_list_at, from the capture thread) or the visit ends."""
         rows = []
         if self.cfg.get("tint_on", True) and self._shop_at:
-            (sx, sy, _, _), (ox, oy) = self._shop_at
+            if self._slots_at != self._list_at:
+                self._slots, self._slots_at = {}, self._list_at
             for key, l in zip(self.last_keys, self.last_listings):
+                span = l.box or l.price_box
+                if span:   # read this time: whatever was remembered at its spot is replaced
+                    self._slots = {y: v for y, v in self._slots.items() if not span[1] <= y < span[3]}
                 s = self.seen.get(key)
                 if l.price_box and s and s.verdict in ("DEAL", "fair", "HIGH"):
-                    x0, y0, x1, y1 = l.price_box
-                    rows.append((ox + sx + x0, oy + sy + y0, x1 - x0, y1 - y0, s.verdict))
+                    self._slots[l.price_box[1]] = (l.price_box, s.verdict)
+            (sx, sy, _, _), (ox, oy) = self._shop_at
+            for _, ((x0, y0, x1, y1), v) in sorted(self._slots.items()):
+                rows.append((ox + sx + x0, oy + sy + y0, x1 - x0, y1 - y0, v))
+        else:
+            self._slots = {}
         if rows != self._tint:
             self._tint = rows
             self.on_event("tint", rows)
@@ -9151,6 +9188,12 @@ class Monitor:
                         imgs = (blank, None)   # no store window anywhere: counts as closed
                     else:
                         imgs = (crop(full, shop_r), crop(full, map_r))
+                    at = None
+                    if shop_r is not None:
+                        thumb = scroll_thumb(imgs[0])
+                        if thumb is None and self._list_at and self._list_at[0] == tuple(shop_r):
+                            thumb = self._list_at[1]   # under a tooltip: taken as not moved
+                        at = (tuple(shop_r), thumb)
                     h = frame_hash(imgs[0])
                     skip = False
                     if last_h is not None and bin(h ^ last_h).count("1") <= 8 and last_imgs:
@@ -9161,9 +9204,6 @@ class Monitor:
                         skip = same >= repeats and frames.qsize() + len(pending) > 0
                         same += not skip
                     else:
-                        if self._tint:   # the screen moved: the tinted rows may be elsewhere now
-                            self._tint = []
-                            self.on_event("tint", [])
                         # Reading behind by more than a few seconds (a cursor or tooltip
                         # over the rows makes every frame a full read, animations make
                         # frames differ): only frames that changed a lot (a scroll,
@@ -9181,6 +9221,14 @@ class Monitor:
                     # change channel is logged under the one it was captured on
                     if not skip:
                         frames.put((imgs[0], imgs[1], time.monotonic(), self.channel))
+                    # only a scroll or the store moving / closing moves the rows: a
+                    # cursor or tooltip over them doesn't, so their tint stays. Set
+                    # after the frame is queued, so a tint isn't sent for the old one.
+                    if at != self._list_at:
+                        self._list_at = at
+                        if self._tint:
+                            self._tint = []
+                            self.on_event("tint", [])
                 except Exception as e:
                     self.on_event("error", f"{type(e).__name__}: {e}")
                 wait = self.cfg["interval_seconds"] - (time.perf_counter() - t0)
