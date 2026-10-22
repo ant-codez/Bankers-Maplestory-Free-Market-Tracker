@@ -1080,6 +1080,60 @@ class Overlay(tk.Toplevel):
         self.keep_on_top()
         self.after(500, self.tick)
 
+# ------------------------------------------------------------------ deal tint
+TINT_FILL = {"DEAL": "#22c55e", "HIGH": "#ef4444"}
+
+
+class Tint(tk.Toplevel):
+    """Green (DEAL) and red (HIGH) see-through boxes over the store's rows in the
+    game, from the monitor's "tint" events. Clicks go through it, it never takes the
+    focus, and screenshots leave it out (WDA_EXCLUDEFROMCAPTURE, Windows 10 2004+),
+    so the monitor still reads the rows under it. Shown and hidden with ShowWindow,
+    not deiconify, which would take the focus from the game."""
+    ALPHA = 0.35
+
+    def __init__(self, app):
+        super().__init__(app.root)
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
+        self.configure(background=OV_KEY)
+        self.attributes("-transparentcolor", OV_KEY)
+        self.attributes("-alpha", self.ALPHA)
+        self.c = tk.Canvas(self, background=OV_KEY, highlightthickness=0, bd=0)
+        self.c.pack(fill="both", expand=True)
+        self.geometry("1x1+-50+-50")        # mapped once off screen, so it has a window handle
+        self.update_idletasks()
+        import ctypes
+        self.u = ctypes.windll.user32
+        self.hwnd = self.u.GetParent(self.winfo_id())
+        # LAYERED | TRANSPARENT (clicks go through) | TOOLWINDOW | NOACTIVATE
+        style = self.u.GetWindowLongW(self.hwnd, -20)
+        self.u.SetWindowLongW(self.hwnd, -20, style | 0x80000 | 0x20 | 0x80 | 0x08000000)
+        self.u.ShowWindow(self.hwnd, 0)     # SW_HIDE
+        if not self.u.SetWindowDisplayAffinity(self.hwnd, 0x11):
+            self.destroy()   # screenshots would show it, over the rows being read
+            raise OSError("this Windows can't keep it out of screenshots (needs Windows 10 2004 or newer)")
+
+    def show(self, rows: list) -> None:
+        self.c.delete("all")
+        if not rows:
+            self.u.ShowWindow(self.hwnd, 0)
+            return
+        x0, y0 = min(r[0] for r in rows), min(r[1] for r in rows)
+        x1, y1 = max(r[0] + r[2] for r in rows), max(r[1] + r[3] for r in rows)
+        for x, y, w, h, verdict in rows:
+            self.c.create_rectangle(x - x0, y - y0, x - x0 + w, y - y0 + h,
+                                    fill=TINT_FILL[verdict], outline="")
+        w, h = x1 - x0, y1 - y0
+        self.c.config(width=w, height=h)
+        self.geometry(f"{w}x{h}+{x0}+{y0}")
+        self.update_idletasks()
+        # placed by Windows (Tk doesn't move it while it's hidden behind Tk's back),
+        # topmost over the game; SWP_NOACTIVATE
+        self.u.SetWindowPos(self.hwnd, -1, x0, y0, w, h, 0x0010)
+        self.u.ShowWindow(self.hwnd, 4)     # SW_SHOWNOACTIVATE
+
+
 class App:
     def __init__(self, root: tk.Tk):
         import sys
@@ -1124,6 +1178,7 @@ class App:
         self.run_started = None   # when this monitoring run began (the widget's clock)
         self.run_elapsed = 0.0    # how long the last run took, shown once it's stopped
         self.overlay = None       # the widget over the game (see show_overlay)
+        self.tint = None          # green / red over the store's rows in the game (see on_tint)
         self.chan_watch = mfm.ChannelWatch(cfg=self.cfg)   # change-channel dialog: seen, then gone
         self._own_rects: list = []   # where the app's windows are on screen, for the monitor (see own_windows)
         self.chan_popup = None
@@ -1785,7 +1840,7 @@ class App:
                 if w.winfo_viewable():
                     rects.append((w.winfo_rootx(), w.winfo_rooty(), w.winfo_width(), w.winfo_height()))
                 for c in w.winfo_children():
-                    if isinstance(c, tk.Toplevel):
+                    if isinstance(c, tk.Toplevel) and not isinstance(c, Tint):   # screenshots leave it out
                         walk(c)
             except tk.TclError:
                 pass
@@ -1952,6 +2007,17 @@ class App:
         elif self._behind and not self.backlog:
             self._behind = False
             self._set_status("Monitoring — open shops and scroll through them normally.")
+
+    def on_tint(self, rows):
+        if sys.platform != "win32" or (not rows and self.tint is None):
+            return
+        try:
+            if self.tint is None:
+                self.tint = Tint(self)
+            self.tint.show(rows)
+        except (tk.TclError, OSError, AttributeError) as e:   # e.g. Windows too old to hide it from screenshots
+            self.cfg["tint_on"] = False
+            self._set_status(f"Deal tint turned off: {e}")
 
     def on_stopped(self, _p=None):
         """The monitor finished, including any frames still queued when Stop was pressed."""
@@ -6307,6 +6373,12 @@ class App:
         tip("A small card that stays on top of the game: monitoring time and state, frames "
             "waiting and the channel, with Start / Stop, Next shop and the channel arrows. "
             "The Widget box in the toolbar and the widget's ✕ turn it on and off too.", cb)
+        tint_on = tk.BooleanVar(value=bool(self.cfg.get("tint_on", True)))
+        cb = ttk.Checkbutton(ov_box, text="Tint deals on the shop window", variable=tint_on)
+        cb.pack(anchor="w")
+        tip("While a shop is open and reading has caught up: green over DEAL rows and red "
+            "over HIGH ones, on the shop in the game. Clicks go through it, and the app's "
+            "screenshots leave it out. Whole-screen reading only (Windows).", cb)
 
         # ---- updates (under the channel picker)
         upd = ttk.LabelFrame(gen, text=" Updates ", padding=(10, 2, 10, 6))
@@ -6361,6 +6433,7 @@ class App:
                 self.nb.add(self.review_tab)  # (back where it was)
             else:
                 self.nb.hide(self.review_tab)
+            self.cfg["tint_on"] = tint_on.get()
             mfm.save_config(self.cfg)
             self._start_hotkeys()
             self.show_overlay(overlay_on.get(), save=True)

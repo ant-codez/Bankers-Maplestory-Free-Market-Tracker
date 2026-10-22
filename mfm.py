@@ -166,6 +166,7 @@ DEFAULT_CONFIG = {
     "hotkeys_on": False,       # the keys below work while the game has focus (off until turned on)
     "hotkeys": {"monitor": "F5", "channel_up": "F4", "channel_down": "F3"},
     "overlay_on": True,        # the widget over the game: monitoring, frames waiting, channel
+    "tint_on": True,           # green / red over DEAL / HIGH rows of the store in the game (Windows)
     "overlay_pos": None,       # where it was left [x, y]; None = top left of the screen
     "inventory_region": None,  # the item inventory window; None = find it automatically
     "chat_region": None,       # the chat messages (for megaphones); None = find it automatically
@@ -1697,6 +1698,7 @@ class Listing:
     raw: str
     sold: bool = False
     icon: "Image.Image | None" = None   # the item's icon, cropped from the store row
+    box: tuple | None = None            # (left, top, right, bottom) of its row in the store image
 
 
 @dataclass
@@ -2560,12 +2562,15 @@ def read_shop(img: Image.Image, cfg: dict, known: list[str], with_title=True,
     rows = find_rows(lines, col_x, img)
     blocked = obscured_spans(img, col_x, int(geom.get("list_top", 0.3) * h))
     skipped: list[int] = []
+    text_h = None       # a row's name + price lines, top to bottom (sizes a lone row's box)
     for row in rows:
         ws = row.name_words + (row.price_words or [])
         if blocked and _covered(blocked, min(x.top for x in ws) - 3,
                                 max(x.top + x.height for x in ws) + 3):
             skipped.append(min(x.top for x in row.name_words))
             continue
+        if row.price_words:
+            text_h = max(text_h or 0, max(x.top + x.height for x in ws) - min(x.top for x in ws))
         sold = row.sold
         qty, price, name_words = row.qty, row.price, row.name_words
         if row.price_words is not None and (sold or price is None):
@@ -2594,7 +2599,10 @@ def read_shop(img: Image.Image, cfg: dict, known: list[str], with_title=True,
                       Listing(normalize_name(name, known), price, qty, raw, sold,
                               _icon_crop(img, row, col_x))))
     found += _recover_missing_rows(img, found, geom, col_x, cfg, known, skipped, blocked)
-    listings = [l for _, l in sorted(found, key=lambda t: t[0])]
+    found.sort(key=lambda t: t[0])
+    for (_, l), box in zip(found, row_boxes([t for t, _ in found], w, text_h)):
+        l.box = box
+    listings = [l for _, l in found]
     for l in listings:
         l.item = resolve_name(l.item, l.icon, l.sold)
     frame = ShopFrame(listings, geom=geom, hidden=len(skipped))
@@ -2602,6 +2610,27 @@ def read_shop(img: Image.Image, cfg: dict, known: list[str], with_title=True,
         frame.title = read_title(img, cfg)
         frame.seller = read_seller(img, cfg)
     return frame
+
+
+LIST_X = (0.03, 0.875)   # the item list's left and right, as fractions of the store width
+
+
+def row_boxes(tops: list[int], img_w: int, text_h: int | None = None) -> list[tuple | None]:
+    """(left, top, right, bottom) of each store row from its name line's top (sorted).
+    Rows are evenly spaced: one row is the usual gap between tops (else ~1.43x the
+    name + price lines of a lone row), and a faded row's text, which reads a little
+    off, is snapped to that spacing. The name sits 14% of a row below its top."""
+    gaps = sorted(b - a for a, b in zip(tops, tops[1:]) if b - a > 20)
+    pitch = gaps[len(gaps) // 2] if gaps else round(1.43 * text_h) if text_h else None
+    if not pitch:
+        return [None] * len(tops)
+    x0, x1 = round(LIST_X[0] * img_w), round(LIST_X[1] * img_w)
+    out = []
+    for t in tops:
+        t = tops[0] + round((t - tops[0]) / pitch) * pitch
+        y0 = t - round(0.14 * pitch)
+        out.append((x0, y0, x1, y0 + round(0.95 * pitch)))
+    return out
 
 
 # ---- automatic layout detection --------------------------------------------
@@ -8381,6 +8410,8 @@ class Monitor:
         # before a frame is looked at, or a shop photo open in the app (a store
         # window at its real size) is found and read as a shop open in the game
         self.own_windows = lambda: ()
+        self._shop_at = None            # (store area, screen origin) of the newest capture, for the tint
+        self._tint: list = []           # the DEAL / HIGH rows last sent to the GUI
         self._frame = None              # the frame being read, for the shop photo
         self._prefetched: dict = {}     # id(frame) -> (frame, future or None, hash, geom used)
         self._pf = None                 # the entry for the frame in step()
@@ -8732,6 +8763,22 @@ class Monitor:
                 and self._now - self.empty_first >= 0.15 * self.cfg["close_frames"]:
             self.end_session()
 
+    def _send_tint(self) -> None:
+        """The open store's DEAL / HIGH rows as screen rectangles (left, top, width,
+        height, verdict), sent to the GUI when they change. Only for a screenshot of
+        the desktop: a copy of the game's window alone has its own coordinates."""
+        rows = []
+        if self.cfg.get("tint_on", True) and self._shop_at:
+            (sx, sy, _, _), (ox, oy) = self._shop_at
+            for key, l in zip(self.last_keys, self.last_listings):
+                s = self.seen.get(key)
+                if l.box and s and s.verdict in ("DEAL", "HIGH"):
+                    x0, y0, x1, y1 = l.box
+                    rows.append((ox + sx + x0, oy + sy + y0, x1 - x0, y1 - y0, s.verdict))
+        if rows != self._tint:
+            self._tint = rows
+            self.on_event("tint", rows)
+
     def _hide_own_windows(self, full: Image.Image) -> None:
         """Black out the app's own windows (own_windows) in a screenshot of the desktop.
         A copy of the game's window alone (GRAB_MODE "window") never shows them, and
@@ -8871,6 +8918,8 @@ class Monitor:
                     if self.megaphones.due():
                         self.megaphones.offer(full)
                     shop_r, map_r = self.regions_for(full)
+                    self._shop_at = (shop_r, tuple(LAST_SCREEN_ORIGIN)) \
+                        if shop_r and GRAB_MODE[0] == "screen" else None
                     if shop_r is None:
                         imgs = (blank, None)   # no store window anywhere: counts as closed
                     else:
@@ -8885,6 +8934,9 @@ class Monitor:
                         skip = same >= repeats and frames.qsize() + len(pending) > 0
                         same += not skip
                     else:
+                        if self._tint:   # the screen moved: the tinted rows may be elsewhere now
+                            self._tint = []
+                            self.on_event("tint", [])
                         # Reading behind by more than a few seconds (a cursor or tooltip
                         # over the rows makes every frame a full read, animations make
                         # frames differ): only frames that changed a lot (a scroll,
@@ -8944,6 +8996,8 @@ class Monitor:
                 except Exception as e:  # keep monitoring through transient failures
                     self.on_event("error", f"{type(e).__name__}: {e}")
                 n = frames.qsize() + len(pending)
+                if n == 0:
+                    self._send_tint()   # caught up: this frame is what's on screen
                 if (n == 0) != (last_backlog == 0) or abs(n - last_backlog) >= 5:
                     last_backlog = n   # how far the OCR is behind the screen, for the GUI
                     self.on_event("backlog", {"frames": n})
@@ -8951,6 +9005,8 @@ class Monitor:
             if pool:
                 pool.shutdown(wait=False, cancel_futures=True)
             self._prefetched.clear()
+            self._tint = []
+            self.on_event("tint", [])
             self.end_session()
             if self.shots_con is not None:
                 self.shots_con.close()
