@@ -27,3 +27,16 @@ assert not mfm.learn_glyphs(img, boxes[1], col_x, 77177)
 assert mfm.learn_glyphs(img, boxes[1], col_x, 77777)
 assert mfm.glyph_price(img, boxes[1], col_x) == 77777
 print("glyphs OK")
+
+# names: the shipped name glyphs spell each row's item (I and l alike, spaces
+# ignored), matched against the official names; the sold last row too
+names = ["Emerald Earrings", "Green Icarus Cape", "Titan", "Blue Sauna Robe", "Dark Burgler",
+         "Emerald Earring", "Titans", "Green Icarus"]                     # near misses must lose
+mfm._Dictionary.cache = mfm._Dictionary(names)
+mfm.NAME_GLYPHS_PATH = Path(tempfile.mkdtemp()) / "name_glyphs.json"
+got = [mfm.glyph_name(img, b, col_x) for b in boxes]
+assert got == ["Emerald Earrings", "Green Icarus Cape", "Titan", "Titan", "Blue Sauna Robe",
+               "Dark Burgler"], got
+# a wrong name can't be taught: "Titan" doesn't spell "Emerald Earrings"
+assert not mfm.learn_name(img, boxes[2], col_x, "Emerald Earrings")
+print("names OK")

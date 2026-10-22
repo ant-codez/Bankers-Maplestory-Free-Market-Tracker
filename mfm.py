@@ -2330,8 +2330,12 @@ def scroll_color(icon: Image.Image | None, faded: bool = False) -> str | None:
             if x < w * 0.45 and y > h * 0.62:
                 continue                                  # stock badge
             c = px[x, y]
-            if sum((c[i] - bg[i]) ** 2 for i in range(3)) < (12 if faded else 30) ** 2:
+            near = (12 if faded else 30) ** 2
+            if sum((c[i] - bg[i]) ** 2 for i in range(3)) < near:
                 continue                                  # background (pale icons sit close to it)
+            if sum((c[i] - INV_SLOT_BG[i]) ** 2 for i in range(3)) < near:
+                continue    # the beige icon cell: a crop inside the list's white margin samples
+                            # the margin as background, and the cell outweighed a red scroll
             hh, sat, v = colorsys.rgb_to_hsv(*(ch / 255 for ch in c))
             if v < 0.25 or (sat < 0.06 and v > 0.9):
                 continue                                  # outline / highlight
@@ -2607,43 +2611,78 @@ def _read_slot(box, img, y, pitch, col_x, cfg, known) -> Listing | None:
 GLYPHS_SEED = BUNDLE / "ocr" / "glyphs.json"
 GLYPHS_PATH = CACHE_DIR / "glyphs.json"
 NATIVE_PITCH = 40           # a store row's height at the game's 1x, in pixels
-_GLYPHS: dict | None = None             # shape -> {char: times seen}
-_GLYPHS_LEARNED: dict = {}              # the part of it learned here (saved)
-_GLYPHS_LOCK = threading.Lock()
 
 
-def _glyph_table() -> dict:
-    global _GLYPHS
-    with _GLYPHS_LOCK:
-        if _GLYPHS is None:
-            table: dict = {}
-            for p in (GLYPHS_SEED, GLYPHS_PATH):
+class _GlyphTable:
+    """Glyph shape -> {character: times seen}: the shipped shapes checked by eye
+    (seed) plus the ones learned here (saved to path). The paths are callables, looked
+    up when used, so they follow the module's settings."""
+
+    def __init__(self, seed, path):
+        self.seed, self.path = seed, path
+        self.table: dict | None = None
+        self.learned: dict = {}          # the part learned here (what's saved)
+        self.lock = threading.Lock()
+
+    def get(self) -> dict:
+        with self.lock:
+            if self.table is None:
+                table: dict = {}
+                for p, mine in ((self.seed(), False), (self.path(), True)):
+                    try:
+                        shapes = json.loads(p.read_text(encoding="utf-8"))["shapes"]
+                    except (OSError, ValueError, KeyError):
+                        continue
+                    for k, counts in shapes.items():
+                        for ch, n in counts.items():
+                            table.setdefault(k, {})[ch] = table.get(k, {}).get(ch, 0) + n
+                            if mine:
+                                self.learned.setdefault(k, {})[ch] = n
+                self.table = table
+            return self.table
+
+    def char(self, key: str) -> str | None:
+        return _glyph_char(self.get().get(key))
+
+    def teach(self, pairs: list[tuple[str, str]]) -> bool:
+        """Learn one line's (shape, character) pairs. Taken only when they line up one
+        to one (each character one shape, each shape one character) and contradict
+        nothing known, so one misread can't teach a wrong character."""
+        by_shape: dict = {}
+        by_char: dict = {}
+        for k, ch in pairs:
+            if by_shape.setdefault(k, ch) != ch or by_char.setdefault(ch, k) != k:
+                return False
+        table = self.get()
+        with self.lock:
+            if any(_glyph_char(table.get(k)) not in (None, ch) for k, ch in pairs):
+                return False
+            new = any(k not in table for k, _ in pairs)
+            for k, ch in pairs:
+                table.setdefault(k, {})[ch] = table.get(k, {}).get(ch, 0) + 1
+                self.learned.setdefault(k, {})[ch] = self.learned.get(k, {}).get(ch, 0) + 1
+            if new:
                 try:
-                    shapes = json.loads(p.read_text(encoding="utf-8"))["shapes"]
-                except (OSError, ValueError, KeyError):
-                    continue
-                for k, counts in shapes.items():
-                    for ch, n in counts.items():
-                        table.setdefault(k, {})[ch] = table.get(k, {}).get(ch, 0) + n
-                        if p == GLYPHS_PATH:
-                            _GLYPHS_LEARNED.setdefault(k, {})[ch] = n
-            _GLYPHS = table
-        return _GLYPHS
+                    self.path().parent.mkdir(parents=True, exist_ok=True)
+                    self.path().write_text(json.dumps({"shapes": self.learned}), encoding="utf-8")
+                except OSError:
+                    pass
+        return True
+
+
+_PRICE_GLYPHS = _GlyphTable(lambda: GLYPHS_SEED, lambda: GLYPHS_PATH)
 
 
 def _glyph_char(counts: dict | None) -> str | None:
     return max(counts, key=counts.get) if counts else None
 
 
-def price_glyphs(img: Image.Image, box: tuple, col_x: int, spans: list | None = None) -> list[str]:
-    """A row's price line ("1 for 65,000 mesos") as glyph shapes, left to right: the
-    pixels clearly darker than the line's background, split at empty columns and
-    taken at the game's 1x, as "#." rows joined by "/". With `spans`, each glyph's
-    (left, top, right, bottom) in the image is added to it, for the deal tint."""
-    l, t, r, b = box
-    pitch = (b - t) / 0.95
-    scale = max(1, round(pitch / NATIVE_PITCH))
-    line = img.crop((col_x - 4, t + round(0.5 * pitch), r, t + round(0.9 * pitch))).convert("L")
+def _line_glyphs(img: Image.Image, area: tuple, scale: int) -> list[tuple]:
+    """The glyphs of one line of store text in `area` (left, top, right, bottom), left
+    to right, as (left, top, right, bottom, shape): the pixels clearly darker than the
+    line's background, split at empty columns, the shape taken at the game's 1x as
+    "#." rows joined by "/"."""
+    line = img.crop(area).convert("L")
     w, h = line.size
     px = line.load()
     bg = statistics.mode(line.getdata())
@@ -2658,12 +2697,23 @@ def price_glyphs(img: Image.Image, box: tuple, col_x: int, spans: list | None = 
         while x < w and cols[x]:
             x += 1
         ys = [y for y in range(h) if any(on[y][x0:x])]
-        out.append("/".join("".join("#" if on[y][xx] else "." for xx in range(x0, x, scale))
-                            for y in range(ys[0], ys[-1] + 1, scale)))
-        if spans is not None:
-            ox, oy = col_x - 4, t + round(0.5 * pitch)
-            spans.append((ox + x0, oy + ys[0], ox + x, oy + ys[-1] + 1))
+        shape = "/".join("".join("#" if on[y][xx] else "." for xx in range(x0, x, scale))
+                         for y in range(ys[0], ys[-1] + 1, scale))
+        out.append((area[0] + x0, area[1] + ys[0], area[0] + x, area[1] + ys[-1] + 1, shape))
     return out
+
+
+def price_glyphs(img: Image.Image, box: tuple, col_x: int, spans: list | None = None) -> list[str]:
+    """A row's price line ("1 for 65,000 mesos") as glyph shapes, left to right. With
+    `spans`, each glyph's (left, top, right, bottom) in the image is added to it, for
+    the deal tint."""
+    l, t, r, b = box
+    pitch = (b - t) / 0.95
+    gs = _line_glyphs(img, (col_x - 4, t + round(0.5 * pitch), r, t + round(0.9 * pitch)),
+                      max(1, round(pitch / NATIVE_PITCH)))
+    if spans is not None:
+        spans.extend(g[:4] for g in gs)
+    return [g[4] for g in gs]
 
 
 def glyph_price(img: Image.Image, box: tuple, col_x: int) -> int | None:
@@ -2675,9 +2725,8 @@ def glyph_read(img: Image.Image, box: tuple, col_x: int) -> tuple[int | None, tu
     """(price, price box): the price as glyph_price reads it, and the (left, top,
     right, bottom) around "65,000 mesos" that the tint colours. Without a glyph read,
     the price line from the text column to the row's right edge."""
-    table = _glyph_table()
     spans: list = []
-    s = "".join(_glyph_char(table.get(k)) or "?" for k in price_glyphs(img, box, col_x, spans))
+    s = "".join(_PRICE_GLYPHS.char(k) or "?" for k in price_glyphs(img, box, col_x, spans))
     m = re.search(r"for((\d{1,3}(?:,\d{3})*)mesos?)", s)
     price = int(m.group(2).replace(",", "")) if m else None
     if not m or len(s) != len(spans):
@@ -2698,38 +2747,144 @@ def learn_glyphs(img: Image.Image, box: tuple, col_x: int, price: int) -> bool:
     text = f"for{price:,}mesos"
     if len(shapes) < len(text):
         return False
-    pairs = list(zip(shapes[-len(text):], text))
-    by_shape: dict = {}
-    by_char: dict = {}
-    for k, ch in pairs:
-        if by_shape.setdefault(k, ch) != ch or by_char.setdefault(ch, k) != k:
-            return False
-    table = _glyph_table()
-    with _GLYPHS_LOCK:
-        if any(_glyph_char(table.get(k)) not in (None, ch) for k, ch in pairs):
-            return False
-        new = any(k not in table for k, _ in pairs)
-        for k, ch in pairs:
-            table.setdefault(k, {})[ch] = table.get(k, {}).get(ch, 0) + 1
-            _GLYPHS_LEARNED.setdefault(k, {})[ch] = _GLYPHS_LEARNED.get(k, {}).get(ch, 0) + 1
-        if new:
-            try:
-                GLYPHS_PATH.parent.mkdir(parents=True, exist_ok=True)
-                GLYPHS_PATH.write_text(json.dumps({"shapes": _GLYPHS_LEARNED}), encoding="utf-8")
-            except OSError:
-                pass
-    return True
+    return _PRICE_GLYPHS.teach(list(zip(shapes[-len(text):], text)))
+
+
+# ---- item names by glyph shape -----------------------------------------------
+#
+# Names are drawn in the same pixel font, so a name's glyphs spell it exactly, but
+# for "I" and "l" (drawn alike) and the odd pair of letters that touch. Matched
+# against the official item names, a name reads in ~1 ms; on 55 recorded frames
+# 174 of 190 names, none wrong, the rest left to Tesseract.
+
+NAME_GLYPHS_SEED = BUNDLE / "ocr" / "name_glyphs.json"
+NAME_GLYPHS_PATH = CACHE_DIR / "name_glyphs.json"
+_NAME_GLYPHS = _GlyphTable(lambda: NAME_GLYPHS_SEED, lambda: NAME_GLYPHS_PATH)
+_ALIKE = str.maketrans("I|", "ll")      # drawn the same in the store's font
+_NAME_INDEX: dict = {}
+
+
+def name_glyphs(img: Image.Image, box: tuple, col_x: int) -> list[str]:
+    """A row's name line as glyph keys, left to right: the shape and where its bottom
+    sits against the line's baseline ("p" hangs below it, "'" sits above). The line's
+    crop moves a pixel between frames; the baseline doesn't."""
+    l, t, r, b = box
+    pitch = (b - t) / 0.95
+    scale = max(1, round(pitch / NATIVE_PITCH))
+    gs = _line_glyphs(img, (col_x - 4, t + round(0.08 * pitch), r, t + round(0.48 * pitch)), scale)
+    if not gs:
+        return []
+    base = statistics.mode(g[3] for g in gs)
+    return [f"{g[4]}@{(g[3] - base) // scale}" for g in gs]
+
+
+def _name_index() -> dict:
+    """The official item names by what glyphs can tell apart: letters only, no spaces
+    (one can be narrow), I as l."""
+    d = _Dictionary.cache
+    names = d.names if d is not None else []
+    if _NAME_INDEX.get("of") is not names:
+        idx: dict = {}
+        for n in names:
+            idx.setdefault(n.replace(" ", "").translate(_ALIKE), []).append(n)
+        _NAME_INDEX.clear()
+        _NAME_INDEX.update(of=names, idx=idx)
+    return _NAME_INDEX["idx"]
+
+
+def glyph_name(img: Image.Image, box: tuple, col_x: int) -> str | None:
+    """The row's item name by glyph shape: the one official name its letters spell, an
+    unknown glyph standing for 1-3 letters (two letters can touch). A name cut off with
+    "..." that several items start with gives that start + "…", for normalize_name and
+    resolve_name to finish as they do Tesseract's read. None when no item, or several,
+    fit: Tesseract reads the row instead."""
+    chars = [_NAME_GLYPHS.char(k) for k in name_glyphs(img, box, col_x)]
+    cut = len(chars) > 3 and chars[-3:] == [".", ".", "."]
+    if cut:
+        chars = chars[:-3]
+    if not chars:
+        return None
+    idx = _name_index()
+    if None not in chars and not cut:
+        hits = idx.get("".join(chars), [])
+    else:
+        rx = re.compile("".join(".{1,3}" if c is None else re.escape(c) for c in chars)
+                        + ("" if cut else "$"))
+        hits = [n for k, ns in idx.items() if rx.match(k) for n in ns]
+    if len(hits) == 1:
+        return hits[0]
+    if not hits or not cut or None in chars:
+        return None
+    n, i, k = hits[0], 0, 0          # the letters shown, as the names spell them
+    while k < len(chars):
+        k += n[i] != " "
+        i += 1
+    return n[:i] + "…"
+
+
+def learn_name(img: Image.Image, box: tuple, col_x: int, name: str) -> bool:
+    """Teach the name glyphs a row whose official name is known (Tesseract read it):
+    its glyphs spell the name without spaces, or, cut off, its start and "..."."""
+    keys = name_glyphs(img, box, col_x)
+    flat = name.replace(" ", "").translate(_ALIKE)
+    if len(keys) == len(flat):
+        pairs = list(zip(keys, flat))
+    elif 3 < len(keys) < len(flat) + 3 and len(set(keys[-3:])) == 1:
+        pairs = list(zip(keys[:-3], flat)) + [(keys[-1], ".")]
+    else:
+        return False
+    return _NAME_GLYPHS.teach(pairs)
 
 
 def read_shop(img: Image.Image, cfg: dict, known: list[str], with_title=True,
               geom: dict | None = None) -> ShopFrame:
-    """Read the store window (see _read_shop_once), with each price read again by
+    """Read the store window. With its layout known (geom), each row is read by glyph
+    shape (_read_shop_glyphs): a few ms a store, where Tesseract takes ~300 ms. A
+    store with a row the glyphs can't settle (a glyph not learned yet, a name several
+    items fit) is read by Tesseract instead (_read_shop_tesseract), which teaches the
+    glyphs the names and prices it confirms, so that gets rarer."""
+    frame = _read_shop_glyphs(img, known, geom) if geom else None
+    if frame is None:
+        return _read_shop_tesseract(img, cfg, known, with_title, geom)
+    if with_title and frame.listings:
+        frame.title, frame.seller = read_title(img, cfg), read_seller(img, cfg)
+    return frame
+
+
+def _read_shop_glyphs(img: Image.Image, known: list[str], geom: dict) -> ShopFrame | None:
+    """Every row of the store by glyph shape, the rows found on the store's grid
+    (store_slots), or None if any row can't be read that way. Rows under the cursor or
+    a tooltip are `hidden`, as with Tesseract."""
+    col_x = int(geom["col_x"] * img.width)
+    listings, hidden = [], 0
+    for box, state in store_slots(img, geom):
+        if state == "empty":
+            continue
+        if state == "hidden":
+            hidden += 1
+            continue
+        price, price_box = glyph_read(img, box, col_x)
+        name = glyph_name(img, box, col_x)
+        if price is None or name is None:
+            return None
+        sold = state == "sold"
+        icon = slot_icon(img, box, col_x)
+        item = resolve_name(normalize_name(name, known) if name.endswith("…") else name, icon, sold)
+        listings.append(Listing(item, price, 1, f"{name} / {price:,} (glyphs)", sold, icon,
+                                box, price_box))
+    return ShopFrame(listings, geom=geom, hidden=hidden)
+
+
+def _read_shop_tesseract(img: Image.Image, cfg: dict, known: list[str], with_title=True,
+                         geom: dict | None = None) -> ShopFrame:
+    """The store by Tesseract (see _read_shop_once), with each price read again by
     glyph shape. A price with a glyph not in the table yet is checked instead by a
     second Tesseract read at `verify_upscale`: kept (and its glyphs learned) only
     when both reads agree. Each upscale misreads different digits (at 3, 88,888 as
     68,888; at 2, 15,000 as 125,010), so on 123 checked rows the pair made 1 wrong
     price where either alone made 3-5. A row they disagree on is `unsure`: left out
-    of this frame (the shop is still open), and read again when the screen changes."""
+    of this frame (the shop is still open), and read again when the screen changes.
+    Names that are official items teach the name glyphs."""
     frame = _read_shop_once(img, cfg, known, with_title, geom)
     if not frame.listings:
         return frame
@@ -2741,6 +2896,8 @@ def read_shop(img: Image.Image, cfg: dict, known: list[str], with_title=True,
             unread.append(l)
         else:
             l.price = p
+        if l.box and _dict() and is_known_item(l.item):    # with no item list, nothing is checked
+            learn_name(img, l.box, col_x, l.item)
     v = int(cfg.get("verify_upscale") or 0)
     if not unread or not v or v == cfg.get("upscale", 3):
         return frame
@@ -2857,6 +3014,49 @@ def row_boxes(tops: list[int], img_w: int, text_h: int | None = None) -> list[tu
         y0 = t - round(0.14 * pitch)
         out.append((x0, y0, x1, y0 + round(0.95 * pitch)))
     return out
+
+
+# the store's six visible slots: first top and spacing as fractions of the store
+# height (at 2x, 313 + 80k of 832 px: the same grid in every capture)
+SLOT_TOP, SLOT_PITCH, SLOT_COUNT = 313 / 832, 80 / 832, 6
+
+
+def store_slots(img: Image.Image, geom: dict) -> list[tuple]:
+    """(box, state) of each visible slot, top to bottom, without OCR: the list is a
+    fixed grid. state is "row" (an item), "sold" (an item drawn faded), "hidden"
+    (under the cursor or a tooltip, so not readable this frame: the rows
+    _read_shop_once skips) or "empty" (no text: a shop with fewer than six items)."""
+    w, h = img.size
+    col_x = int(geom["col_x"] * w)
+    pitch = SLOT_PITCH * h
+    x0, x1 = round(LIST_X[0] * w), round(LIST_X[1] * w)
+    blocked = obscured_spans(img, col_x, int(geom.get("list_top", 0.3) * h))
+    g = ImageOps.grayscale(img)
+    ink = 20 * (pitch / NATIVE_PITCH) ** 2     # a row's text has 250+ dark pixels at 1x
+    out = []
+    for k in range(SLOT_COUNT):
+        t = round(SLOT_TOP * h + k * pitch)
+        y0, y1 = t + round(0.14 * pitch), t + round(0.84 * pitch)   # name top, price bottom
+        if _covered(blocked, y0 - 3, y1 + 3):
+            state = "hidden"
+        else:
+            hist = g.crop((col_x, y0 - 3, x1, y1 + 3)).histogram()
+            bg = hist.index(max(hist))
+            if sum(hist[:max(0, bg - 40)]) < ink:
+                state = "empty"
+            else:
+                state = "sold" if row_is_faded(img, y0 - 2, y1 + 2, col_x) else "row"
+        out.append(((x0, t, x1, t + round(0.95 * pitch)), state))
+    return out
+
+
+def slot_icon(img: Image.Image, box: tuple, col_x: int) -> Image.Image | None:
+    """A slot's icon, cut as _icon_crop cuts it for a row OCR read at its usual
+    height (name top 14% of a row down, price bottom 70% of a row below that), so
+    icons found either way are the same size and stored alike."""
+    pitch = (box[3] - box[1]) / 0.95
+    top = box[1] + round(0.14 * pitch)
+    return _icon_crop(img, Row([Word("", col_x, top, 0, round(0.7 * pitch), 0)], None), col_x)
 
 
 # ---- automatic layout detection --------------------------------------------

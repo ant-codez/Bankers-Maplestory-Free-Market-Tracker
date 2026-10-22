@@ -52,6 +52,7 @@ if (Test-Path (Join-Path $TessDir "tessdata\configs")) {
   --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32 `
   --add-data "$Tess;tesseract" `
   --add-data "$(Join-Path $Root 'ocr\glyphs.json');ocr" `
+  --add-data "$(Join-Path $Root 'ocr\name_glyphs.json');ocr" `
   --add-data "$(Join-Path $Root 'packaging\icon.png');." `
   --add-data "$(Join-Path $Root 'packaging\fonts');fonts" `
   --workpath (Join-Path $Work "pyi") --specpath $Work --distpath (Join-Path $Root "dist") `
