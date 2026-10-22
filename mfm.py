@@ -2911,28 +2911,35 @@ def learn_name(img: Image.Image, box: tuple, col_x: int, name: str) -> bool:
     return _NAME_GLYPHS.teach(pairs)
 
 
+# The store's text column and the top of its item list, as fractions of the store
+# window: the same in every store. Tesseract measured them (98 and 306 of 471x832) on
+# 43 of 55 recorded stores, the rest 86-99 px off or not at all, and a shop whose
+# layout had to be measured again went through Tesseract for seconds.
+STORE_GEOM = {"col_x": 98 / 471, "list_top": 306 / 832}
+
+
 def read_shop(img: Image.Image, cfg: dict, known: list[str], with_title=True,
               geom: dict | None = None) -> ShopFrame:
-    """Read the store window. With its layout known (geom), each row is read by glyph
-    shape (_read_shop_glyphs): a few ms a store, where Tesseract takes ~300 ms. A
-    store with a row the glyphs can't settle (a glyph not learned yet, a name several
-    items fit) is read by Tesseract instead (_read_shop_tesseract), which teaches the
-    glyphs the names and prices it confirms, so that gets rarer."""
-    frame = _read_shop_glyphs(img, cfg, known, geom) if geom else None
-    if frame is None:
-        return _read_shop_tesseract(img, cfg, known, with_title, geom)
+    """Read the store window. Each row is read by glyph shape on the store's fixed
+    layout (_read_shop_glyphs, STORE_GEOM): a few ms a store, where Tesseract takes
+    ~300 ms. A row the glyphs can't settle is read alone by Tesseract, or left for a
+    background Tesseract read (_read_shop_tesseract) that teaches the glyphs, so that
+    gets rarer. `geom` is unused: kept for callers."""
+    frame = _read_shop_glyphs(img, cfg, known, STORE_GEOM)
     if with_title and frame.listings:
         frame.title, frame.seller = read_title(img, cfg), read_seller(img, cfg)
     return frame
 
 
-def _read_shop_glyphs(img: Image.Image, cfg: dict, known: list[str], geom: dict) -> ShopFrame | None:
+def _read_shop_glyphs(img: Image.Image, cfg: dict, known: list[str], geom: dict) -> ShopFrame:
     """Every row of the store by glyph shape, the rows found on the store's grid
     (store_slots): a name the glyphs can't settle is read for that row alone by
-    Tesseract (_slot_name). None if a price can't be read by glyphs, or a name at all.
-    Rows under the cursor or a tooltip are `hidden`, as with Tesseract."""
+    Tesseract (_slot_name). A row they still can't read (a price glyph not learned
+    yet) is `unsure`, left out of this frame like one under the cursor, and the store
+    goes to _teach_later, so the reading never waits on Tesseract (it had held frames
+    up for seconds). Rows under the cursor or a tooltip are `hidden`."""
     col_x = int(geom["col_x"] * img.width)
-    listings, hidden = [], 0
+    listings, hidden, unsure = [], 0, 0
     for box, state in store_slots(img, geom):
         if state == "empty":
             continue
@@ -2940,18 +2947,52 @@ def _read_shop_glyphs(img: Image.Image, cfg: dict, known: list[str], geom: dict)
             hidden += 1
             continue
         price, price_box, name = _glyph_row(img, box, col_x)
-        if price is None:
-            return None         # prices are only taken read exactly: Tesseract, checked twice
         sold = state == "sold"
         icon = slot_icon(img, box, col_x)
-        if name is None:
+        if price is not None and name is None:
             name = _slot_name(img, box, col_x, cfg, known)
-            if name is None:
-                return None
+        if price is None or name is None:
+            unsure += 1         # prices are only taken read exactly: Tesseract, checked twice
+            continue
         item = resolve_name(normalize_name(name, known) if name.endswith("…") else name, icon, sold)
         listings.append(Listing(item, price, 1, f"{name} / {price:,} (glyphs)", sold, icon,
                                 box, price_box))
-    return ShopFrame(listings, geom=geom, hidden=hidden)
+    if unsure:
+        _teach_later(img, cfg, known)
+    return ShopFrame(listings, geom=geom, hidden=hidden, unsure=unsure)
+
+
+_TEACH: dict = {}       # "queue" / "thread": the background Tesseract reads that teach glyphs
+
+
+def _teach_later(img: Image.Image, cfg: dict, known: list[str]) -> None:
+    """Read the store by Tesseract in the background, for what it teaches the glyphs
+    (prices both reads agree on, official names); what it reads isn't logged. One store
+    at a time: while it's busy, newer ones are dropped, so it can't fall behind."""
+    import queue as _queue
+    if "queue" not in _TEACH:
+        _TEACH["queue"] = _queue.Queue(maxsize=1)
+
+        def work():
+            while True:
+                args = _TEACH["queue"].get()
+                try:
+                    _read_shop_tesseract(*args, with_title=False, geom=STORE_GEOM)
+                except Exception:
+                    pass
+        _TEACH["thread"] = threading.Thread(target=work, daemon=True, name="mfm-teach")
+        _TEACH["thread"].start()
+    h = frame_hash(img)
+    seen = _TEACH.setdefault("seen", OrderedDict())
+    if h in seen:
+        return              # this picture was read already: a still screen re-read
+    try:
+        _TEACH["queue"].put_nowait((img, cfg, known))
+    except _queue.Full:
+        return
+    seen[h] = True
+    if len(seen) > 256:
+        seen.popitem(last=False)
 
 
 ROW_CACHE_SIZE = 512
@@ -9268,7 +9309,9 @@ class Monitor:
             frame = read_shop(img, self.cfg, names, with_title=False, geom=self.geom)
             self._ocr_warm = True
         ocr_ms = int((time.perf_counter() - t0) * 1000)
-        self.last_hidden = frame.hidden
+        # rows under the cursor, or not readable yet (being learned in the background),
+        # get real re-reads of a still screen: a glyph read is a few ms
+        self.last_hidden = frame.hidden + frame.unsure
         if not frame.listings and (frame.hidden or frame.unsure):
             # every row is under the cursor/tooltip, or unsure: the shop is still open,
             # so this isn't an empty frame and the layout hasn't changed; just wait

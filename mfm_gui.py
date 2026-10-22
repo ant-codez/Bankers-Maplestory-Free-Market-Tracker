@@ -1820,14 +1820,23 @@ class App:
             self.monitor.channel = self.channel()
 
     def drain_events(self):
+        """The monitor's events, every 30 ms so the tint follows the game closely. Of the
+        frames read since last time only the newest is shown: drawing each one's preview
+        held up the events behind it (the tint among them)."""
+        frame = None
         try:
             while True:
                 kind, p = self.events.get_nowait()
+                if kind == "frame":
+                    frame = p
+                    continue
                 getattr(self, f"on_{kind.lstrip('_')}")(p)
         except queue.Empty:
             pass
+        if frame is not None:
+            self.on_frame(frame)
         self._own_rects = self.own_windows()
-        self.root.after(100, self.drain_events)
+        self.root.after(30, self.drain_events)
 
     def own_windows(self) -> list:
         """Where this app's windows are on screen, (left, top, width, height) each:
