@@ -196,10 +196,10 @@ def where_text(shop, seller, mp, channel) -> str:
 
 
 def num(s: str) -> float:
-    try:
-        return float(str(s).replace(",", "").replace("%", "").replace("+", ""))
-    except ValueError:
-        return float("-inf")
+    """A cell's number for sorting: its first one, so a range ("35,000–40,000") sorts by
+    its low end."""
+    m = re.match(r"\s*([-+]?[\d,]*\.?\d+)", str(s).replace("%", ""))
+    return float(m.group(1).replace(",", "").replace("+", "")) if m else float("-inf")
 
 
 
@@ -4808,6 +4808,8 @@ class App:
                              command=lambda: self.open_meowdb(t))
             menu.add_command(label="Look up on MesoWatch", state="normal" if n == 1 else "disabled",
                              command=lambda: self.open_mesowatch(t))
+            menu.add_command(label="Set MesoWatch range…", state="normal" if n == 1 else "disabled",
+                             command=lambda: self.ask_range_for(t))
             menu.tk_popup(e.x_root, e.y_root)
         bind_right_click(t, popup)
 
@@ -5078,6 +5080,7 @@ class App:
                              state="normal" if one and self._listing_of(tree, rows[0]) else "disabled")
             menu.add_command(label="Look up on meowdb", state=single, command=lambda: self.open_meowdb(tree))
             menu.add_command(label="Look up on MesoWatch", state=single, command=lambda: self.open_mesowatch(tree))
+            menu.add_command(label="Set MesoWatch range…", state=single, command=lambda: self.ask_range_for(tree))
             menu.add_separator()
             menu.add_command(label="Watch this item" if len(items) == 1 else f"Watch these {len(items)} items",
                              command=lambda: self.alert_from_table(tree))
@@ -5242,6 +5245,40 @@ class App:
         sel = tree.selection()
         if sel:
             self.mesowatch(tree.set(sel[0], "item"))
+
+    def ask_range_for(self, tree):
+        sel = tree.selection()
+        if sel:
+            self.ask_range(tree.set(sel[0], "item"))
+
+    def ask_range(self, item: str, parent=None):
+        """Set (or, left empty, remove) the item's market rate as a range: MesoWatch's
+        "typical range". Below it is a DEAL, above it HIGH, for range_days days."""
+        from tkinter import simpledialog
+
+        cur = self.con.execute("SELECT low, high FROM ranges WHERE item = ?", (item,)).fetchone()
+        text = simpledialog.askstring(
+            "MesoWatch range",
+            f"Typical range for {item} on MesoWatch, e.g. 35K - 40K.\n"
+            f"Used for {self.cfg.get('range_days', 7)} days; leave empty to remove it.",
+            initialvalue=f"{mfm.fmt(cur[0])} - {mfm.fmt(cur[1])}" if cur else "",
+            parent=parent or self.root)
+        if text is None:
+            return
+        if not text.strip():
+            mfm.clear_range(self.con, item)
+            self._set_status(f"Removed the MesoWatch range for '{item}'.")
+        else:
+            rng = mfm.parse_range(text)
+            if not rng:
+                messagebox.showerror("MesoWatch range", f"'{text}' isn't a range like 35K - 40K.",
+                                     parent=parent or self.root)
+                return
+            mfm.set_range(self.con, item, *rng)
+            self._set_status(f"'{item}': {mfm.fmt(rng[0])}–{mfm.fmt(rng[1])} is its market rate for "
+                             f"{self.cfg.get('range_days', 7)} days (new sightings; rows already "
+                             "judged keep theirs).")
+        self.refresh_tables()
 
     def mesowatch(self, item: str):
         """Open the item on MesoWatch (its own panel, by game id) with its name on the
@@ -6218,6 +6255,7 @@ class App:
             ("unmatched_extra_frames", "Extra reads for names not in database", 0, 5, 1),
             ("close_frames", "Empty frames = shop closed", 1, 20, 1),
             ("history_days", "Market median window (days)", 1, 90, 1),
+            ("range_days", "MesoWatch range lasts (days)", 1, 90, 1),
             ("upscale", "OCR upscale factor", 1, 6, 1),
             ("verify_upscale", "Second read's upscale (0 = off)", 0, 6, 1),
             ("min_sightings", "Required sightings before judging", 1, 100, 1),
@@ -6239,6 +6277,9 @@ class App:
                                       "saved.",
             "close_frames": "Reads without a shop before the shop counts as closed.",
             "history_days": "How many days of sightings make the market price.",
+            "range_days": "A MesoWatch range you set (right-click an item → Set MesoWatch range) "
+                          "is its market price for this many days: below it a DEAL, above it "
+                          "HIGH. Then your own sightings take over again.",
             "shot_days": "The shop window as it was on screen when a row was logged is kept this "
                          "long (right-click a listing → Show shop photo), to check a misread name. "
                          "About 20 KB each, a few per shop visit. 0 takes none.",
@@ -6897,6 +6938,8 @@ class App:
             self.mesowatch(item)
         ttk.Button(head, text="Look up on meowdb", command=lookup).pack(side="right")
         ttk.Button(head, text="Look up on MesoWatch", command=lookup_mesowatch).pack(side="right", padx=(0, 6))
+        ttk.Button(head, text="Set MesoWatch range…",
+                   command=lambda: self.ask_range(item, win)).pack(side="right", padx=(0, 6))
         summary = ttk.Label(win, padding=(12, 0))
         summary.pack(anchor="w")
         legend = ttk.Label(win, padding=(12, 0), foreground="#777")

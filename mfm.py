@@ -151,6 +151,7 @@ DEFAULT_CONFIG = {
     "close_frames": 3,         # empty frames in a row = shop closed
     "hotkey": "f8",
     "deal_threshold_pct": 15,  # flag listings this % below/above market
+    "range_days": 7,           # how long a MesoWatch range you set is the market rate
     "history_days": 14,        # window for computing market rate from your logs
     "outliers_on": True,       # ignore absurd prices once an item has enough sightings
     "min_sightings": 5,        # sightings an item needs before it's judged (market price,
@@ -384,6 +385,13 @@ def db() -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS reference (
             item TEXT PRIMARY KEY,
             price INTEGER NOT NULL,
+            source TEXT,
+            updated TEXT
+        );
+        CREATE TABLE IF NOT EXISTS ranges (       -- a "typical range" you set, from MesoWatch
+            item TEXT PRIMARY KEY,
+            low INTEGER NOT NULL,
+            high INTEGER NOT NULL,
             source TEXT,
             updated TEXT
         );
@@ -6992,8 +7000,40 @@ def min_sightings(cfg: dict) -> int:
 MIN_SALES = 3   # the median of 2 is their average: one odd sale (godly stats, a typo) moves it
 
 
+class MarketRange(int):
+    """A market rate that is a range (MesoWatch's "typical range", set by you): its
+    middle as the number, its ends for verdict(): below the range a DEAL, above it
+    HIGH, inside it fair. fmt() shows it as "35,000–40,000"."""
+
+    def __new__(cls, low: int, high: int):
+        r = super().__new__(cls, (low + high) // 2)
+        r.low, r.high = low, high
+        return r
+
+
+def parse_range(text: str) -> tuple[int, int] | None:
+    """(low, high) from "35K - 40K", "35k–40k", "35,000 to 40,000" or one price."""
+    parts = [p for p in re.split(r"\s*(?:-|–|—|to)\s*", text.strip(), flags=re.I) if p]
+    prices = [parse_price(p) for p in parts]
+    if not 1 <= len(prices) <= 2 or not all(prices):
+        return None
+    return min(prices), max(prices)
+
+
+def set_range(con, item: str, low: int, high: int, source: str = "MesoWatch") -> None:
+    con.execute("INSERT OR REPLACE INTO ranges VALUES (?,?,?,?,?)",
+                (item, low, high, source, utc_now()))
+    con.commit()
+
+
+def clear_range(con, item: str) -> None:
+    con.execute("DELETE FROM ranges WHERE item = ?", (item,))
+    con.commit()
+
+
 def market_rate(con, item: str, cfg: dict) -> tuple[int | None, str]:
     """What an item is worth, in order of preference:
+    0. a MesoWatch range you set, for `range_days` (MarketRange)
     1. the median price it has actually SOLD for (MIN_SALES+ sales)
     2. the median price it's LISTED for (`min_sightings`+ listings still for sale)
     3. a reference price you imported (e.g. from meso.watch)
@@ -7001,7 +7041,10 @@ def market_rate(con, item: str, cfg: dict) -> tuple[int | None, str]:
     1, 2 and 4 only once the item has `min_sightings` sightings in the history
     window, so a listing isn't called a DEAL or HIGH against one or two prices,
     and always without outliers. Your own data beats an imported price, which
-    only gets older."""
+    only gets older; a range you set beats both while it's fresh."""
+    rng = con.execute("SELECT low, high, source, updated FROM ranges WHERE item = ?", (item,)).fetchone()
+    if rng and (rng[3] or "") >= utc_ago(days=cfg.get("range_days", 7)):
+        return MarketRange(rng[0], rng[1]), f"{rng[2] or 'MesoWatch'} range, set {rng[3][:10]}"
     ref = con.execute("SELECT price, source FROM reference WHERE item = ?", (item,)).fetchone()
     need = min_sightings(cfg)
     seen = con.execute("SELECT COUNT(*) FROM listings WHERE item = ? AND COALESCE(last_seen, ts) >= ?",
@@ -7042,6 +7085,9 @@ def verdict(price_each: float, market: int | None, threshold: float,
     if not market:
         return "?", None
     pct = (price_each - market) / market * 100
+    if isinstance(market, MarketRange):
+        return ("DEAL" if price_each < market.low else "HIGH" if price_each > market.high
+                else "fair"), pct
     if pct <= -threshold:
         return "DEAL", pct
     if pct >= threshold:
@@ -7500,6 +7546,8 @@ def record_full(full: Image.Image, channel, cfg) -> list[Listing]:
 
 
 def fmt(n) -> str:
+    if isinstance(n, MarketRange):
+        return f"{n.low:,}–{n.high:,}"
     return f"{int(n):,}" if n is not None else "-"
 
 
