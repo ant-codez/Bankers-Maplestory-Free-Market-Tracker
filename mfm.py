@@ -388,15 +388,25 @@ def db() -> sqlite3.Connection:
             source TEXT,
             updated TEXT
         );
-        CREATE TABLE IF NOT EXISTS ranges (       -- a "typical range" you set, from MesoWatch
+        CREATE TABLE IF NOT EXISTS mesowatch (    -- what you noted from MesoWatch (Set range / Import)
             item TEXT PRIMARY KEY,
-            low INTEGER NOT NULL,
-            high INTEGER NOT NULL,
+            typical INTEGER,                        -- its "typical" price
+            low INTEGER,                            -- its "typical range"
+            high INTEGER,
+            volume INTEGER,
+            total_volume INTEGER,
+            total_sales INTEGER,
             source TEXT,
             updated TEXT
         );
         """
     )
+    if con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ranges'").fetchone():
+        # the first version kept only ranges you set: into mesowatch with the rest
+        con.execute("INSERT OR IGNORE INTO mesowatch (item, low, high, source, updated) "
+                    "SELECT item, low, high, source, updated FROM ranges")
+        con.execute("DROP TABLE ranges")
+        con.commit()
     if "kind" not in {r[1] for r in con.execute("PRAGMA table_info(ocr_lines)")}:
         con.execute("ALTER TABLE ocr_lines ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'")
     mcols = {r[1] for r in con.execute("PRAGMA table_info(megaphones)")}
@@ -7001,12 +7011,13 @@ MIN_SALES = 3   # the median of 2 is their average: one odd sale (godly stats, a
 
 
 class MarketRange(int):
-    """A market rate that is a range (MesoWatch's "typical range", set by you): its
-    middle as the number, its ends for verdict(): below the range a DEAL, above it
-    HIGH, inside it fair. fmt() shows it as "35,000–40,000"."""
+    """A market rate that is a range (MesoWatch's "typical range", set or imported by
+    you): as a number its typical price (else its middle), its ends for verdict():
+    below the range a DEAL, above it HIGH, inside it fair. fmt() shows it as
+    "35,000–40,000"."""
 
-    def __new__(cls, low: int, high: int):
-        r = super().__new__(cls, (low + high) // 2)
+    def __new__(cls, low: int, high: int, typical: int | None = None):
+        r = super().__new__(cls, typical or (low + high) // 2)
         r.low, r.high = low, high
         return r
 
@@ -7021,19 +7032,136 @@ def parse_range(text: str) -> tuple[int, int] | None:
 
 
 def set_range(con, item: str, low: int, high: int, source: str = "MesoWatch") -> None:
-    con.execute("INSERT OR REPLACE INTO ranges VALUES (?,?,?,?,?)",
+    """The item's MesoWatch range, keeping its other MesoWatch numbers."""
+    con.execute("INSERT INTO mesowatch (item, low, high, source, updated) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(item) DO UPDATE SET low = excluded.low, high = excluded.high, "
+                "source = excluded.source, updated = excluded.updated",
                 (item, low, high, source, utc_now()))
     con.commit()
 
 
 def clear_range(con, item: str) -> None:
-    con.execute("DELETE FROM ranges WHERE item = ?", (item,))
+    """Forget what you noted from MesoWatch for the item."""
+    con.execute("DELETE FROM mesowatch WHERE item = ?", (item,))
     con.commit()
+
+
+MESOWATCH_FIELDS = ("typical", "low", "high", "volume", "total_volume", "total_sales")
+# field names as written in an import (normalized by _mw_key) -> ours
+_MW_ALIASES = {"item": "item", "name": "item",
+               "typical": "typical", "typical_price": "typical", "price": "typical",
+               "low": "low", "typical_low": "low", "range_low": "low", "min": "low",
+               "high": "high", "typical_high": "high", "range_high": "high", "max": "high",
+               "range": "range", "typical_range": "range",
+               "volume": "volume", "total_volume": "total_volume",
+               "total_sales": "total_sales", "sales": "total_sales",
+               "watch_under": "watch_under", "watch": "watch_under", "max_each": "watch_under",
+               "alert_under": "watch_under"}
+
+
+def _mw_key(key: str) -> str:
+    """A field name as _MW_ALIASES has it: lower case, snake_case (totalSales, Total Sales)."""
+    key = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key).strip())
+    return re.sub(r"[\s\-]+", "_", key.lower())
+
+
+def parse_mesowatch(path) -> tuple[list[dict], list[tuple[int, str]]]:
+    """What you noted from MesoWatch, from a .json file (a list of items, {"items":
+    [...]}, or {item name: fields}) or a .csv one with the same column names:
+    (entries, problems). Field names are forgiving (Typical Range, totalSales, ...),
+    prices too ("37500", "37,500", "37.5K", "1.2M"); see _MW_ALIASES. A problem is
+    (row from 1, why): no item name, no number, or a value that can't be read."""
+    path = Path(path)
+    if path.suffix.lower() == ".csv":
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            rows = list(csv.DictReader(f))
+    else:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        if isinstance(data, dict) and isinstance(data.get("items"), list):
+            data = data["items"]
+        if isinstance(data, dict):
+            data = [dict(v, item=k) if isinstance(v, dict) else {"item": k, "typical": v}
+                    for k, v in data.items()]
+        rows = data if isinstance(data, list) else []
+    entries, problems = [], []
+    for n, row in enumerate(rows, 1):
+        if not isinstance(row, dict):
+            problems.append((n, "not a set of fields"))
+            continue
+        e = {k: None for k in ("item", *MESOWATCH_FIELDS, "watch_under")}
+        bad = None
+        for k, v in row.items():
+            field = _MW_ALIASES.get(_mw_key(k))
+            if field is None or v in (None, ""):
+                continue
+            if field == "item":
+                e["item"] = " ".join(str(v).split())
+            elif field == "range":
+                rng = parse_range(str(v))
+                if rng:
+                    e["low"], e["high"] = rng
+                else:
+                    bad = f"can't read the range {v!r}"
+            else:
+                num = int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) \
+                    else parse_price(str(v))
+                if num is None:
+                    bad = f"can't read {k} {v!r}"
+                else:
+                    e[field] = num
+        if (e["low"] is None) != (e["high"] is None):
+            e["low"] = e["high"] = e["low"] or e["high"]       # one end given: that price
+        if e["low"] is not None and e["low"] > e["high"]:
+            e["low"], e["high"] = e["high"], e["low"]
+        if not e["item"]:
+            problems.append((n, "no item name"))
+        elif bad:
+            problems.append((n, f"{e['item']}: {bad}"))
+        elif all(e[f] is None for f in (*MESOWATCH_FIELDS, "watch_under")):
+            problems.append((n, f"{e['item']}: no numbers"))
+        else:
+            entries.append(e)
+    return entries, problems
+
+
+def import_mesowatch(con, entries: list[dict], known=None) -> dict:
+    """Store parse_mesowatch's entries (dated now, so they count for range_days), each
+    under its official item name when the item list is loaded: {"imported": n,
+    "unknown": [(name, suggestion or None)] (not stored), "watch": [(item, price)]
+    for the watch list}. An entry replaces what you had noted for that item."""
+    d = _Dictionary.cache
+    out: dict = {"imported": 0, "unknown": [], "watch": []}
+    now = utc_now()
+    for e in entries:
+        item = e["item"]
+        if d is not None and d.names:
+            official = d.lower.get(_norm(item))
+            if not official:
+                pick, score = best_match(con, item)
+                out["unknown"].append((item, pick if pick and score >= 0.8 else None))
+                continue
+            item = official
+        if any(e[f] is not None for f in MESOWATCH_FIELDS):
+            con.execute("INSERT OR REPLACE INTO mesowatch VALUES (?,?,?,?,?,?,?,?,?)",
+                        (item, *(e[f] for f in MESOWATCH_FIELDS), "MesoWatch", now))
+            out["imported"] += 1
+        if e["watch_under"] is not None:
+            out["watch"].append((item, e["watch_under"]))
+    con.commit()
+    return out
+
+
+def mesowatch_info(con, item: str) -> dict | None:
+    """What you noted from MesoWatch for the item, as {column: value}, or None."""
+    cur = con.execute("SELECT * FROM mesowatch WHERE item = ?", (item,))
+    row = cur.fetchone()
+    return dict(zip([c[0] for c in cur.description], row)) if row else None
 
 
 def market_rate(con, item: str, cfg: dict) -> tuple[int | None, str]:
     """What an item is worth, in order of preference:
-    0. a MesoWatch range you set, for `range_days` (MarketRange)
+    0. what you noted from MesoWatch, for `range_days`: its typical range (a
+       MarketRange), else its typical price
     1. the median price it has actually SOLD for (MIN_SALES+ sales)
     2. the median price it's LISTED for (`min_sightings`+ listings still for sale)
     3. a reference price you imported (e.g. from meso.watch)
@@ -7042,9 +7170,14 @@ def market_rate(con, item: str, cfg: dict) -> tuple[int | None, str]:
     window, so a listing isn't called a DEAL or HIGH against one or two prices,
     and always without outliers. Your own data beats an imported price, which
     only gets older; a range you set beats both while it's fresh."""
-    rng = con.execute("SELECT low, high, source, updated FROM ranges WHERE item = ?", (item,)).fetchone()
-    if rng and (rng[3] or "") >= utc_ago(days=cfg.get("range_days", 7)):
-        return MarketRange(rng[0], rng[1]), f"{rng[2] or 'MesoWatch'} range, set {rng[3][:10]}"
+    mw = con.execute("SELECT typical, low, high, total_sales, source, updated FROM mesowatch "
+                     "WHERE item = ?", (item,)).fetchone()
+    if mw and (mw[5] or "") >= utc_ago(days=cfg.get("range_days", 7)) and (mw[0] or mw[1]):
+        typical, low, high, sales = mw[:4]
+        how = (mw[4] or "MesoWatch") + (f", {sales:,} sales" if sales else "") + f", noted {mw[5][:10]}"
+        if low is not None and high is not None:
+            return MarketRange(low, high, typical), how + " (range)"
+        return typical, how + " (typical)"
     ref = con.execute("SELECT price, source FROM reference WHERE item = ?", (item,)).fetchone()
     need = min_sightings(cfg)
     seen = con.execute("SELECT COUNT(*) FROM listings WHERE item = ? AND COALESCE(last_seen, ts) >= ?",

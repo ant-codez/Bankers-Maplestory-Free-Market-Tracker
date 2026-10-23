@@ -1246,6 +1246,7 @@ class App:
             "Drag it by its top bar.", cb)
         ttk.Button(bar, text="Settings", command=self.settings).pack(side="right", padx=6)
         ttk.Button(bar, text="Import prices", command=self.import_ref).pack(side="right")
+        ttk.Button(bar, text="Import MesoWatch", command=self.import_mesowatch).pack(side="right", padx=(0, 4))
         ttk.Button(bar, text="Export prices", command=self.export_prices).pack(side="right", padx=(0, 6))
         b = ttk.Button(bar, text="Shared Database", command=self.shared_dialog)
         b.pack(side="right", padx=(0, 6))
@@ -5256,7 +5257,8 @@ class App:
         "typical range". Below it is a DEAL, above it HIGH, for range_days days."""
         from tkinter import simpledialog
 
-        cur = self.con.execute("SELECT low, high FROM ranges WHERE item = ?", (item,)).fetchone()
+        cur = self.con.execute("SELECT low, high FROM mesowatch WHERE item = ? AND low IS NOT NULL",
+                               (item,)).fetchone()
         text = simpledialog.askstring(
             "MesoWatch range",
             f"Typical range for {item} on MesoWatch, e.g. 35K - 40K.\n"
@@ -5757,6 +5759,45 @@ class App:
 
         # give the window manager a moment to hide us so we're not in the screenshot
         self.root.after(600, grab)
+
+    def import_mesowatch(self):
+        """Import what you noted from MesoWatch (a .json or .csv file, see
+        mfm.parse_mesowatch): typical prices and ranges, used as the market price for
+        range_days days, volumes and sales, and watch_under prices onto the watch list."""
+        path = filedialog.askopenfilename(title="MesoWatch notes (JSON or CSV)",
+                                          filetypes=[("JSON or CSV", "*.json *.csv"), ("All files", "*")])
+        if not path:
+            return
+        try:
+            entries, problems = mfm.parse_mesowatch(path)
+            res = mfm.import_mesowatch(self.con, entries)
+        except Exception as e:
+            messagebox.showerror("Import failed", f"{type(e).__name__}: {e}")
+            return
+        for item, cap in res["watch"]:
+            w = next((w for w in self.watch if not mfm.watch_is_word(w) and w["item"] == item), None)
+            if w:
+                w["max_each"] = cap               # keeps when it was last found
+            else:
+                self.watch.append({"item": item, "max_each": cap, "last_found": None})
+        if res["watch"]:
+            mfm.save_watchlist(self.watch)
+            self.refresh_alerts()
+            self.refresh_megaphones()
+        self.refresh_tables()
+        days = self.cfg.get("range_days", 7)
+        lines = [f"Imported {res['imported']} item{'s' if res['imported'] != 1 else ''} from your "
+                 f"MesoWatch notes: their market price for {days} days."]
+        if res["watch"]:
+            lines.append(f"Watching {len(res['watch'])} of them at the price you gave.")
+        if res["unknown"]:
+            lines.append("Not imported, not an item name:\n" + "\n".join(
+                f"  {n}" + (f"   (did you mean {pick}?)" if pick else "") for n, pick in res["unknown"][:20]))
+        if problems:
+            lines.append("Rows skipped:\n" + "\n".join(f"  row {r}: {why}" for r, why in problems[:20]))
+        show = messagebox.showwarning if res["unknown"] or problems else messagebox.showinfo
+        show("MesoWatch import", "\n\n".join(lines))
+        self._set_status(lines[0])
 
     def import_ref(self):
         path = filedialog.askopenfilename(title="Reference prices CSV (item,price)",
@@ -6976,9 +7017,21 @@ class App:
             out = [mfm.is_outlier(r[1], bounds) for r in rows]
             st.update(rows=rows, out=out, mkt=mkt, bounds=bounds)
             ps = mfm.price_stats(self.con, item, self.cfg, bounds)
+            mw = mfm.mesowatch_info(self.con, item)
+            noted = []
+            if mw:
+                if mw["typical"]:
+                    noted.append(f"typical {mfm.fmt(mw['typical'])}")
+                if mw["low"] is not None:
+                    noted.append(f"range {mfm.fmt(mw['low'])}–{mfm.fmt(mw['high'])}")
+                for key, label in (("volume", "volume"), ("total_volume", "total volume"),
+                                   ("total_sales", "total sales")):
+                    if mw[key] is not None:
+                        noted.append(f"{label} {mfm.fmt(mw[key])}")
             summary.config(text=(
                 f"Market {mfm.fmt(mkt)} ({src})   ·   listed median {mfm.fmt(ps['listed_median'])} "
-                f"({ps['listed_n']})   ·   sold median {mfm.fmt(ps['sold_median'])} ({ps['sold_n']})"))
+                f"({ps['listed_n']})   ·   sold median {mfm.fmt(ps['sold_median'])} ({ps['sold_n']})"
+                + (f"\nMesoWatch, noted {(mw['updated'] or '')[:10]}:   " + "   ·   ".join(noted) if noted else "")))
             legend.config(text="dots = for sale    grey squares = sold    dashed line = market"
                           + ("    hollow orange = outlier (ignored)" if any(out) else "")
                           + (f"\nnormal range {mfm.fmt(bounds[0])} – {mfm.fmt(bounds[1])}; "

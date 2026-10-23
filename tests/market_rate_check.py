@@ -19,7 +19,8 @@ con = sqlite3.connect(":memory:")
 con.execute("CREATE TABLE listings (item TEXT, price INTEGER, qty INTEGER DEFAULT 1, ts TEXT, "
             "last_seen TEXT, sold INTEGER DEFAULT 0)")
 con.execute("CREATE TABLE reference (item TEXT PRIMARY KEY, price INTEGER, source TEXT, updated TEXT)")
-con.execute("CREATE TABLE ranges (item TEXT PRIMARY KEY, low INTEGER, high INTEGER, source TEXT, updated TEXT)")
+con.execute("CREATE TABLE mesowatch (item TEXT PRIMARY KEY, typical INTEGER, low INTEGER, high INTEGER, "
+            "volume INTEGER, total_volume INTEGER, total_sales INTEGER, source TEXT, updated TEXT)")
 con.executemany("INSERT INTO reference VALUES (?, 1000, 'site', '')", [("Ore",), ("Gem",)])
 cfg = dict(mfm.DEFAULT_CONFIG)
 now = mfm.utc_now()
@@ -61,10 +62,10 @@ assert mfm.parse_range("40k–35k") == (35000, 40000) and mfm.parse_range("1.2m 
 assert mfm.parse_range("39,999") == (39999, 39999) and mfm.parse_range("cheap") is None
 mfm.set_range(con, "Ore", 35000, 40000)
 got, how = mfm.market_rate(con, "Ore", cfg)
-assert (got.low, got.high, int(got)) == (35000, 40000, 37500) and how.startswith("MesoWatch range"), how
+assert (got.low, got.high, int(got)) == (35000, 40000, 37500) and how.startswith("MesoWatch"), how
 assert mfm.fmt(got) == "35,000–40,000"
 assert [mfm.verdict(p, got, 15)[0] for p in (34999, 35000, 40000, 40001)] == ["DEAL", "fair", "fair", "HIGH"]
-con.execute("UPDATE ranges SET updated = '2000-01-01T00:00:00Z'")      # older than range_days
+con.execute("UPDATE mesowatch SET updated = '2000-01-01T00:00:00Z'")      # older than range_days
 assert mfm.market_rate(con, "Ore", cfg) == (600, "median of 3 sold, 1 outlier ignored"), "a stale range: your own data again"
 mfm.clear_range(con, "Ore")
 print("ranges OK")
