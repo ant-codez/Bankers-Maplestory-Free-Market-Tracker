@@ -7051,13 +7051,13 @@ def clear_range(con, item: str) -> None:
 
 MESOWATCH_FIELDS = ("typical", "low", "high", "volume", "total_volume", "total_sales")
 # field names as written in an import (normalized by _mw_key) -> ours
-_MW_ALIASES = {"item": "item", "name": "item",
+_MW_ALIASES = {"item": "item", "name": "item", "item_name": "item",
                "typical": "typical", "typical_price": "typical", "price": "typical",
                "low": "low", "typical_low": "low", "range_low": "low", "min": "low",
                "high": "high", "typical_high": "high", "range_high": "high", "max": "high",
                "range": "range", "typical_range": "range",
                "volume": "volume", "total_volume": "total_volume",
-               "total_sales": "total_sales", "sales": "total_sales",
+               "total_sales": "total_sales", "sales": "total_sales", "sales_count": "total_sales",
                "watch_under": "watch_under", "watch": "watch_under", "max_each": "watch_under",
                "alert_under": "watch_under",
                "24h": "change_24h", "change_24h": "change_24h", "24h_change": "change_24h",
@@ -7148,16 +7148,20 @@ def parse_mesowatch(path) -> tuple[list[dict], list[tuple[int, str]]]:
 def import_mesowatch(con, entries: list[dict], known=None) -> dict:
     """Store parse_mesowatch's entries (dated now, so they count for range_days), each
     under its official item name when the item list is loaded: {"imported": n,
-    "unknown": [(name, suggestion or None)] (not stored), "watch": [(item, price)]
-    for the watch list}. An entry replaces what you had noted for that item."""
+    "unknown": [(name, suggestion or None)], "ungraded": [scroll names without their
+    grade, which could be any of them] (neither stored), "watch": [(item, price)] for
+    the watch list}. An entry replaces what you had noted for that item."""
     d = _Dictionary.cache
-    out: dict = {"imported": 0, "unknown": [], "watch": []}
+    out: dict = {"imported": 0, "unknown": [], "ungraded": [], "watch": []}
     now = utc_now()
     for e in entries:
         item = e["item"]
         if d is not None and d.names:
-            official = d.lower.get(_norm(item))
+            official = _official_name(d, item)
             if not official:
+                if any(n.startswith(item.rstrip(":") + ": ") for n in d.names):
+                    out["ungraded"].append(item)        # "Gloves Attack Scroll": which grade?
+                    continue
                 pick, score = best_match(con, item)
                 out["unknown"].append((item, pick if pick and score >= 0.8 else None))
                 continue
@@ -7181,6 +7185,18 @@ def parse_percent(v) -> float | None:
     sign = -1 if t[:1] in "▼↓" else 1
     m = re.search(r"[-+]?\d+(?:\.\d+)?", t)
     return sign * float(m.group()) if m else None
+
+
+def _official_name(d, name: str) -> str | None:
+    """The official item a MesoWatch name is: as it is, with straight quotes, or
+    without its " (F)" / " (M)" (MesoWatch tells the versions apart, the item list
+    doesn't)."""
+    name = name.translate(str.maketrans({"“": '"', "”": '"', "‘": "'", "’": "'"}))
+    for n in (name, re.sub(r"\s*\((?:F|M)\)$", "", name)):
+        hit = d.lower.get(_norm(n))
+        if hit:
+            return hit
+    return None
 
 
 def mesowatch_info(con, item: str) -> dict | None:

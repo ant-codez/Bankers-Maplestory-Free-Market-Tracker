@@ -5793,9 +5793,18 @@ class App:
         if res["unknown"]:
             lines.append("Not imported, not an item name:\n" + "\n".join(
                 f"  {n}" + (f"   (did you mean {pick}?)" if pick else "") for n, pick in res["unknown"][:20]))
+        if res.get("ungraded"):
+            k = len(res["ungraded"])
+            lines.append(f"Not imported, {k} scroll{'s' if k != 1 else ''} without a grade (Chaos, "
+                         "Greater, ...), which could be any of them: " + ", ".join(res["ungraded"][:5])
+                         + (", ..." if k > 5 else ""))
+        empty = [p for p in problems if p[1].endswith(": no numbers")]
+        problems = [p for p in problems if p not in empty]
+        if empty:
+            lines.append(f"{len(empty)} row{'s' if len(empty) != 1 else ''} had no numbers (nothing to import).")
         if problems:
             lines.append("Rows skipped:\n" + "\n".join(f"  row {r}: {why}" for r, why in problems[:20]))
-        show = messagebox.showwarning if res["unknown"] or problems else messagebox.showinfo
+        show = messagebox.showwarning if res["unknown"] or res.get("ungraded") or problems else messagebox.showinfo
         show("MesoWatch import", "\n\n".join(lines))
         self._set_status(lines[0])
 

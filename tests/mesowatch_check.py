@@ -192,3 +192,15 @@ mfm._Dictionary.cache = None
 mfm.import_mesowatch(con24, [dict(e, item="Baby Angel Wings") for e in ex[:1]])
 assert mfm.mesowatch_info(con24, "Baby Angel Wings")["change_24h"] == 4.2
 print("24h change OK")
+
+# MesoWatch's own names: "(F)" versions and curly quotes are the plain item; a scroll
+# without its grade is listed apart, not suggested as one grade; MesoWatch's export
+# headers (Item Name, Typical Price, 24h Change, Sales Count, Volume) are understood
+mfm._Dictionary.cache = mfm._Dictionary(["Red Cloth Pants", 'Black "Hit Me" Shirt', "Gloves Attack Scroll: Chaos",
+                                         "Gloves Attack Scroll: Greater"])
+res = mfm.import_mesowatch(mfm.db(), [{"item": n, "typical": 1000} for n in
+                                      ("Red Cloth Pants (F)", "Black “Hit Me” Shirt", "Gloves Attack Scroll")])
+assert res["imported"] == 2 and res["ungraded"] == ["Gloves Attack Scroll"] and not res["unknown"], res
+assert {mfm._mw_field(k) for k in ("Item Name", "Typical Price", "24h Change", "Sales Count", "Volume")} == \
+    {"item", "typical", "change_24h", "total_sales", "volume"}
+print("mesowatch names OK")
