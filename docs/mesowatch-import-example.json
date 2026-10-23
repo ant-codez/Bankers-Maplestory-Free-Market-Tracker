@@ -1,11 +1,11 @@
 [
-  {"item": "Baby Angel Wings", "typical": "37.5K", "range": "35K - 40K",
+  {"item": "Baby Angel Wings", "typical": "37.5K", "range": "35K - 40K", "24h": "+4.2%",
    "volume": 42, "total_volume": 1890, "total_sales": 678},
-  {"item": "Angel Halo", "typical": 52000, "low": "48K", "high": "55K",
+  {"item": "Angel Halo", "typical": 52000, "low": "48K", "high": "55K", "24h": "-1.5%",
    "volume": 18, "total_volume": 640, "total_sales": 231, "watch_under": "45K"},
   {"item": "White Beanie", "typical": "6.5K"},
-  {"item": "Blue Sauna Robe", "typical": "180K", "low": 160000, "high": 200000,
+  {"item": "Blue Sauna Robe", "typical": "180K", "low": 160000, "high": 200000, "24h": "0%",
    "volume": 9, "total_volume": 310, "total_sales": 97},
-  {"item": "Steel Pride", "typical": "1.2M", "low": "1.1M", "high": "1.35M",
+  {"item": "Steel Pride", "typical": "1.2M", "low": "1.1M", "high": "1.35M", "24h": -12,
    "volume": 3, "total_volume": 88, "total_sales": 41, "watch_under": 1000000}
 ]

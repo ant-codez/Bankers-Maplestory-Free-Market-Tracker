@@ -397,7 +397,8 @@ def db() -> sqlite3.Connection:
             total_volume INTEGER,
             total_sales INTEGER,
             source TEXT,
-            updated TEXT
+            updated TEXT,
+            change_24h REAL                         -- its "24h" price change, in percent
         );
         """
     )
@@ -407,6 +408,8 @@ def db() -> sqlite3.Connection:
                     "SELECT item, low, high, source, updated FROM ranges")
         con.execute("DROP TABLE ranges")
         con.commit()
+    if "change_24h" not in {r[1] for r in con.execute("PRAGMA table_info(mesowatch)")}:
+        con.execute("ALTER TABLE mesowatch ADD COLUMN change_24h REAL")
     if "kind" not in {r[1] for r in con.execute("PRAGMA table_info(ocr_lines)")}:
         con.execute("ALTER TABLE ocr_lines ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'")
     mcols = {r[1] for r in con.execute("PRAGMA table_info(megaphones)")}
@@ -7056,13 +7059,25 @@ _MW_ALIASES = {"item": "item", "name": "item",
                "volume": "volume", "total_volume": "total_volume",
                "total_sales": "total_sales", "sales": "total_sales",
                "watch_under": "watch_under", "watch": "watch_under", "max_each": "watch_under",
-               "alert_under": "watch_under"}
+               "alert_under": "watch_under",
+               "24h": "change_24h", "change_24h": "change_24h", "24h_change": "change_24h",
+               "24_hour_change": "change_24h", "change_24_hour": "change_24h",
+               "day_change": "change_24h"}
 
 
 def _mw_key(key: str) -> str:
     """A field name as _MW_ALIASES has it: lower case, snake_case (totalSales, Total Sales)."""
     key = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key).strip())
     return re.sub(r"[\s\-]+", "_", key.lower())
+
+
+_MW_LOOSE = {k.replace("_", ""): v for k, v in _MW_ALIASES.items()}
+
+
+def _mw_field(key: str) -> str | None:
+    """Our field for an import's field name, underscores aside (Change24H, totalsales)."""
+    k = _mw_key(key)
+    return _MW_ALIASES.get(k) or _MW_LOOSE.get(k.replace("_", ""))
 
 
 def parse_mesowatch(path) -> tuple[list[dict], list[tuple[int, str]]]:
@@ -7088,14 +7103,20 @@ def parse_mesowatch(path) -> tuple[list[dict], list[tuple[int, str]]]:
         if not isinstance(row, dict):
             problems.append((n, "not a set of fields"))
             continue
-        e = {k: None for k in ("item", *MESOWATCH_FIELDS, "watch_under")}
+        e = {k: None for k in ("item", *MESOWATCH_FIELDS, "change_24h", "watch_under")}
         bad = None
         for k, v in row.items():
-            field = _MW_ALIASES.get(_mw_key(k))
+            field = _mw_field(k)
             if field is None or v in (None, ""):
                 continue
             if field == "item":
                 e["item"] = " ".join(str(v).split())
+            elif field == "change_24h":
+                pct = parse_percent(v)
+                if pct is None:
+                    bad = f"can't read the 24h change {v!r}"
+                else:
+                    e["change_24h"] = pct
             elif field == "range":
                 rng = parse_range(str(v))
                 if rng:
@@ -7117,7 +7138,7 @@ def parse_mesowatch(path) -> tuple[list[dict], list[tuple[int, str]]]:
             problems.append((n, "no item name"))
         elif bad:
             problems.append((n, f"{e['item']}: {bad}"))
-        elif all(e[f] is None for f in (*MESOWATCH_FIELDS, "watch_under")):
+        elif all(e[f] is None for f in (*MESOWATCH_FIELDS, "change_24h", "watch_under")):
             problems.append((n, f"{e['item']}: no numbers"))
         else:
             entries.append(e)
@@ -7141,14 +7162,25 @@ def import_mesowatch(con, entries: list[dict], known=None) -> dict:
                 out["unknown"].append((item, pick if pick and score >= 0.8 else None))
                 continue
             item = official
-        if any(e[f] is not None for f in MESOWATCH_FIELDS):
-            con.execute("INSERT OR REPLACE INTO mesowatch VALUES (?,?,?,?,?,?,?,?,?)",
-                        (item, *(e[f] for f in MESOWATCH_FIELDS), "MesoWatch", now))
+        if any(e.get(f) is not None for f in (*MESOWATCH_FIELDS, "change_24h")):
+            con.execute(f"INSERT OR REPLACE INTO mesowatch (item, {', '.join(MESOWATCH_FIELDS)}, "
+                        "change_24h, source, updated) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (item, *(e.get(f) for f in MESOWATCH_FIELDS), e.get("change_24h"), "MesoWatch", now))
             out["imported"] += 1
-        if e["watch_under"] is not None:
+        if e.get("watch_under") is not None:
             out["watch"].append((item, e["watch_under"]))
     con.commit()
     return out
+
+
+def parse_percent(v) -> float | None:
+    """A percent change as MesoWatch shows it: "+4.2%", "-12%", "▲ 4.2%", or 4.2."""
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return float(v)
+    t = str(v).strip().replace(",", ".").replace("−", "-")
+    sign = -1 if t[:1] in "▼↓" else 1
+    m = re.search(r"[-+]?\d+(?:\.\d+)?", t)
+    return sign * float(m.group()) if m else None
 
 
 def mesowatch_info(con, item: str) -> dict | None:

@@ -7024,6 +7024,8 @@ class App:
                     noted.append(f"typical {mfm.fmt(mw['typical'])}")
                 if mw["low"] is not None:
                     noted.append(f"range {mfm.fmt(mw['low'])}–{mfm.fmt(mw['high'])}")
+                if mw.get("change_24h") is not None:
+                    noted.append(f"24h {mw['change_24h']:+.1f}%")
                 for key, label in (("volume", "volume"), ("total_volume", "total volume"),
                                    ("total_sales", "total sales")):
                     if mw[key] is not None:

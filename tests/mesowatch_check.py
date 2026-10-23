@@ -71,12 +71,12 @@ entries, problems = parse_json([
 ])
 e = by_item(entries)
 assert set(e["Baby Angel Wings"]) == {"item", "typical", "low", "high", "volume", "total_volume",
-                                      "total_sales", "watch_under"}, e["Baby Angel Wings"]
+                                      "total_sales", "change_24h", "watch_under"}, e["Baby Angel Wings"]
 assert e["Baby Angel Wings"] == {"item": "Baby Angel Wings", "typical": 37500, "low": 35000, "high": 40000,
                                  "volume": 42, "total_volume": 1890, "total_sales": 678,
-                                 "watch_under": None}, e["Baby Angel Wings"]
+                                 "change_24h": None, "watch_under": None}, e["Baby Angel Wings"]
 assert e["Angel Halo"] == {"item": "Angel Halo", "typical": 52000, "low": 48000, "high": 55000, "volume": 18,
-                           "total_volume": 640, "total_sales": 231, "watch_under": 45000}, e["Angel Halo"]
+                           "total_volume": 640, "total_sales": 231, "change_24h": None, "watch_under": 45000}, e["Angel Halo"]
 bsr = e["Blue Sauna Robe"]
 assert (bsr["typical"], bsr["low"], bsr["high"], bsr["total_sales"]) == (180000, 160000, 200000, 97), bsr
 wb = e["White Beanie"]
@@ -174,7 +174,21 @@ assert not isinstance(got, mfm.MarketRange), got
 mfm._Dictionary.cache = None
 res = mfm.import_mesowatch(con, [{"item": "Totally New Item", "typical": 5, "low": None, "high": None,
                                   "volume": None, "total_volume": None, "total_sales": None,
-                                  "watch_under": None}])
+                                  "change_24h": None, "watch_under": None}])
 assert res["imported"] == 1 and not res["unknown"], res
 assert mfm.mesowatch_info(con, "Totally New Item")["typical"] == 5
 print("mesowatch OK")
+
+# the 24h change: a percent however it's written, under any spelling of its name,
+# stored and kept; an older mesowatch table gets the column
+assert [mfm.parse_percent(v) for v in ("+4.2%", "-12%", "▼ 3.5%", 4.2, "n/a")] == [4.2, -12.0, -3.5, 4.2, None]
+assert {mfm._mw_field(k) for k in ("24h", "24h Change", "change24h", "Change24H", "24 Hour Change")} == {"change_24h"}
+ex, probs = mfm.parse_mesowatch(ROOT / "docs" / "mesowatch-import-example.json")
+assert not probs and by_item(ex)["Steel Pride"]["change_24h"] == -12.0 and by_item(ex)["White Beanie"]["change_24h"] is None
+bad, probs = parse_json([{"item": "Angel Halo", "24h": "lots"}])
+assert not bad and "24h change" in probs[0][1], probs
+con24 = mfm.db()
+mfm._Dictionary.cache = None
+mfm.import_mesowatch(con24, [dict(e, item="Baby Angel Wings") for e in ex[:1]])
+assert mfm.mesowatch_info(con24, "Baby Angel Wings")["change_24h"] == 4.2
+print("24h change OK")
