@@ -1102,6 +1102,7 @@ class Tint(tk.Toplevel):
         self.configure(background=OV_KEY)
         self.attributes("-transparentcolor", OV_KEY)
         self.attributes("-alpha", self.ALPHA)
+        self.fonts: dict = {}
         self.c = tk.Canvas(self, background=OV_KEY, highlightthickness=0, bd=0)
         self.c.pack(fill="both", expand=True)
         self.geometry("1x1+-50+-50")        # mapped once off screen, so it has a window handle
@@ -1117,16 +1118,23 @@ class Tint(tk.Toplevel):
             self.destroy()   # screenshots would show it, over the rows being read
             raise OSError("this Windows can't keep it out of screenshots (needs Windows 10 2004 or newer)")
 
+    def shapes(self, rows: list) -> list:
+        """What to draw: (left, top, width, height, fill, text or None, text colour)."""
+        return [(x, y, w, h, TINT_FILL[verdict], None, None) for x, y, w, h, verdict, *_ in rows]
+
     def show(self, rows: list) -> None:
         self.c.delete("all")
-        if not rows:
+        shapes = self.shapes(rows)
+        if not shapes:
             self.u.ShowWindow(self.hwnd, 0)
             return
-        x0, y0 = min(r[0] for r in rows), min(r[1] for r in rows)
-        x1, y1 = max(r[0] + r[2] for r in rows), max(r[1] + r[3] for r in rows)
-        for x, y, w, h, verdict in rows:
-            self.c.create_rectangle(x - x0, y - y0, x - x0 + w, y - y0 + h,
-                                    fill=TINT_FILL[verdict], outline="")
+        x0, y0 = min(r[0] for r in shapes), min(r[1] for r in shapes)
+        x1, y1 = max(r[0] + r[2] for r in shapes), max(r[1] + r[3] for r in shapes)
+        for x, y, w, h, fill, text, fg in shapes:
+            self.c.create_rectangle(x - x0, y - y0, x - x0 + w, y - y0 + h, fill=fill, outline="")
+            if text:
+                self.c.create_text(x - x0 + w // 2, y - y0 + h // 2, text=text, fill=fg,
+                                   font=self.font(h))
         w, h = x1 - x0, y1 - y0
         self.c.config(width=w, height=h)
         self.geometry(f"{w}x{h}+{x0}+{y0}")
@@ -1135,6 +1143,47 @@ class Tint(tk.Toplevel):
         # topmost over the game; SWP_NOACTIVATE
         self.u.SetWindowPos(self.hwnd, -1, x0, y0, w, h, 0x0010)
         self.u.ShowWindow(self.hwnd, 4)     # SW_SHOWNOACTIVATE
+
+
+    def font(self, h: int):
+        from tkinter import font as tkfont
+        px = max(10, round(h * 0.6))
+        if px not in self.fonts:
+            self.fonts[px] = tkfont.Font(root=self, family="Segoe UI", size=-px, weight="bold")
+        return self.fonts[px]
+
+
+def diff_colours(pct: float) -> tuple[str, str]:
+    """(fill, text colour) for a price pct % off the market price: green below it, red
+    above, darker the further off (full at 60%); dark text on the pale ones."""
+    if abs(pct) < 0.5:
+        return "#e5e7eb", "#111111"
+    t = min(abs(pct), 60) / 60
+    pale, deep = ((209, 250, 223), (20, 83, 45)) if pct < 0 else ((254, 215, 215), (127, 29, 29))
+    rgb = [round(a + (b - a) * t) for a, b in zip(pale, deep)]
+    light = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2] > 150
+    return "#%02x%02x%02x" % tuple(rgb), "#111111" if light else "#ffffff"
+
+
+class Badges(Tint):
+    """The % from the market price beside each tinted price, 10 px right of it: "▼ 23%"
+    below the market price, "▲ 15%" above it, on green / red, darker the further off.
+    A Tint of its own, nearly opaque, so the text reads (the tint is see-through)."""
+    ALPHA = 0.92
+    GAP = 10
+
+    def shapes(self, rows: list) -> list:
+        out = []
+        for x, y, w, h, verdict, *rest in rows:
+            pct = rest[0] if rest else None
+            if pct is None:
+                continue
+            arrow = "▼" if pct <= -0.5 else "▲" if pct >= 0.5 else "±"
+            text = f"{arrow} {min(abs(pct), 999):.0f}%" + ("+" if abs(pct) > 999 else "")
+            fill, fg = diff_colours(pct)
+            bw = self.font(h).measure(text) + round(h * 0.6)
+            out.append((x + w + self.GAP, y, bw, h, fill, text, fg))
+        return out
 
 
 class App:
@@ -1182,6 +1231,7 @@ class App:
         self.run_elapsed = 0.0    # how long the last run took, shown once it's stopped
         self.overlay = None       # the widget over the game (see show_overlay)
         self.tint = None          # green / red over the store's rows in the game (see on_tint)
+        self.badges = None        # the % from the market price beside them (see on_tint)
         self.chan_watch = mfm.ChannelWatch(cfg=self.cfg)   # change-channel dialog: seen, then gone
         self._own_rects: list = []   # where the app's windows are on screen, for the monitor (see own_windows)
         self.chan_popup = None
@@ -2027,7 +2077,9 @@ class App:
         try:
             if self.tint is None:
                 self.tint = Tint(self)
+                self.badges = Badges(self)
             self.tint.show(rows)
+            self.badges.show(rows)
         except (tk.TclError, OSError, AttributeError) as e:   # e.g. Windows too old to hide it from screenshots
             self.cfg["tint_on"] = False
             self._set_status(f"Deal tint turned off: {e}")

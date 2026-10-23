@@ -9599,7 +9599,8 @@ class Monitor:
     def _send_tint(self) -> None:
         """The open store's prices as screen rectangles (left, top, width, height,
         verdict: DEAL / fair / HIGH / OUTLIER / ? or LOW, an outlier far below the usual
-        price), sent to the GUI when they change; sold rows get none. Only for a screenshot of the desktop:
+        price, and the % from the market price or None), sent to the GUI when they
+        change; sold rows get none. Only for a screenshot of the desktop:
         a copy of the game's window alone has its own coordinates.
 
         Each row's tint is remembered by its spot in the list: a row this read left
@@ -9617,10 +9618,11 @@ class Monitor:
                 if l.price_box and s and s.verdict in ("DEAL", "fair", "HIGH", "OUTLIER", "?"):
                     # far below the usual price: its own colour (verdict() calls it a DEAL)
                     tint = "LOW" if s.low_outlier and s.verdict in ("DEAL", "OUTLIER") else s.verdict
-                    self._slots[l.price_box[1]] = (l.price_box, tint)
+                    pct = round(s.pct, 1) if s.pct is not None else None
+                    self._slots[l.price_box[1]] = (l.price_box, tint, pct)
             (sx, sy, _, _), (ox, oy) = self._shop_at
-            for _, ((x0, y0, x1, y1), v) in sorted(self._slots.items()):
-                rows.append((ox + sx + x0, oy + sy + y0, x1 - x0, y1 - y0, v))
+            for _, ((x0, y0, x1, y1), v, pct) in sorted(self._slots.items()):
+                rows.append((ox + sx + x0, oy + sy + y0, x1 - x0, y1 - y0, v, pct))
         else:
             self._slots = {}
         if rows != self._tint:

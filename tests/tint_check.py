@@ -44,9 +44,9 @@ m.last_listings, m.last_keys = ls, [(k,) for k in "ABCDEF"]
 m.seen = {k: mfm.SeenListing("x", 1, 1, 1, 1, v, 0, "") for k, v in
           zip(m.last_keys, ("DEAL", "fair", "HIGH", "SOLD", "OUTLIER", "?"))}
 m._send_tint()
-assert events == [("tint", [(903, 609, 162, 28, "DEAL"), (903, 689, 162, 28, "fair"),
-                            (903, 769, 162, 28, "HIGH"), (903, 929, 162, 28, "OUTLIER"),
-                            (903, 1009, 162, 28, "?")])], events
+assert events == [("tint", [(903, 609, 162, 28, "DEAL", 0), (903, 689, 162, 28, "fair", 0),
+                            (903, 769, 162, 28, "HIGH", 0), (903, 929, 162, 28, "OUTLIER", 0),
+                            (903, 1009, 162, 28, "?", 0)])], events
 m._send_tint()
 assert len(events) == 1, "unchanged rows aren't sent again"
 ls[0].price_box = None
@@ -107,3 +107,14 @@ m2.seen = {("A",): mfm.SeenListing("x", 1, 1, 1, 1, "DEAL", -90, "", low_outlier
 m2._send_tint()
 assert [r[4] for r in events[-1][1]] == ["LOW", "DEAL"], events[-1]
 print("low outlier OK")
+
+# each price carries its % from the market price, for the badge beside it
+m3 = mfm.Monitor(dict(mfm.DEFAULT_CONFIG), lambda k, p: events.append((k, p)))
+m3._shop_at = m._shop_at
+m3.last_listings, m3.last_keys = ls[:3], [("A",), ("B",), ("C",)]
+m3.seen = {("A",): mfm.SeenListing("x", 1, 1, 1, 1, "DEAL", -23.456, ""),
+           ("B",): mfm.SeenListing("x", 1, 1, 1, 1, "HIGH", 15.04, ""),
+           ("C",): mfm.SeenListing("x", 1, 1, 1, 1, "?", None, "")}
+m3._send_tint()
+assert [(r[4], r[5]) for r in events[-1][1]] == [("DEAL", -23.5), ("HIGH", 15.0), ("?", None)], events[-1]
+print("pct OK")
