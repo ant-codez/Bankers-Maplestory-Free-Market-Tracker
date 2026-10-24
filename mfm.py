@@ -89,8 +89,10 @@ def data_dir() -> Path:
     return d
 
 
-# Shown to you: YYMM.minor.hotfix. The codename is for development notes only.
-VERSION = "2610.22.002"
+# Shown to you, and compared with the newest release's tag (vMAJOR.MINOR.PATCH) to
+# find updates. This fork numbers its own releases from 1.0.0 (it began from
+# jayee88/mfm-tracker 2610.22.002). The codename is for development notes only.
+VERSION = "1.0.3"
 CODENAME = "npcprices"
 
 DATA = data_dir()
@@ -4831,7 +4833,7 @@ def _get(url: str, timeout: int = 30) -> bytes:
 # (the running app is renamed to "... .old", which every system allows, and deleted
 # by the new one when it starts). Then the new app is started and this one closes.
 
-UPDATE_REPO = "jayee88/mfm-tracker"
+UPDATE_REPO = "ant-codez/mfm-tracker-custom"     # this fork's releases (each with a -Windows.zip)
 UPDATE_CHECK_EVERY = timedelta(hours=24)
 
 
