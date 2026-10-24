@@ -16,6 +16,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("XDG_DATA_HOME", tempfile.mkdtemp())
+if sys.platform == "win32":             # the new app it starts keeps its data apart from yours
+    os.environ["APPDATA"] = tempfile.mkdtemp()
 import mfm  # noqa: E402
 
 if os.environ.get("GITHUB_TOKEN"):
@@ -28,6 +30,18 @@ if os.environ.get("GITHUB_TOKEN"):
         with urllib.request.urlopen(req, timeout=timeout, context=mfm.ssl_context()) as r:
             return r.read()
     mfm._get = _get
+
+
+def apps_in(folder: Path) -> list[int]:
+    """PIDs of processes whose program is in folder: the app this test installed, not
+    one you have open elsewhere."""
+    if sys.platform == "win32":
+        out = subprocess.run(["powershell", "-NoProfile", "-Command",
+                              f"Get-Process | Where-Object {{ $_.Path -like '{folder / '*'}' }} | "
+                              "ForEach-Object { $_.Id }"], capture_output=True, text=True).stdout
+        return [int(x) for x in out.split()]
+    out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True).stdout
+    return [int(line.split()[0]) for line in out.splitlines() if str(folder) in line]
 
 
 def running(name_part: str, but: int) -> bool:
@@ -88,13 +102,14 @@ def main() -> int:
 
     mfm.start_new_app(cmd)
     time.sleep(20)
-    started = running("Free Market Tracker.exe" if sys.platform == "win32" else str(new_exe), old_proc.pid)
+    started = [pid for pid in apps_in(home) if pid != old_proc.pid]
     print("new app running on its own:", started)
     assert started, "the new app didn't start"
-    if sys.platform == "win32":
-        subprocess.run(["taskkill", "/F", "/IM", "Free Market Tracker.exe"], capture_output=True)
-    else:
-        subprocess.run(["pkill", "-f", str(new_exe)], capture_output=True)
+    for pid in started:                 # only the app this test installed
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+        else:
+            subprocess.run(["kill", str(pid)], capture_output=True)
 
     old_proc.kill()
     old_proc.wait()

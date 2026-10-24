@@ -4833,7 +4833,7 @@ def _get(url: str, timeout: int = 30) -> bytes:
 # (the running app is renamed to "... .old", which every system allows, and deleted
 # by the new one when it starts). Then the new app is started and this one closes.
 
-UPDATE_REPO = "ant-codez/mfm-tracker-custom"     # this fork's releases (each with a -Windows.zip)
+UPDATE_REPO = "ant-codez/Bankers-Maplestory-Free-Market-Tracker"     # this fork's releases (a -Windows.zip each)
 UPDATE_CHECK_EVERY = timedelta(hours=24)
 
 
