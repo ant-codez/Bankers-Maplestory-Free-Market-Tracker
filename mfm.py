@@ -169,7 +169,8 @@ DEFAULT_CONFIG = {
     "hotkeys_on": False,       # the keys below work while the game has focus (off until turned on)
     "hotkeys": {"monitor": "F5", "channel_up": "F4", "channel_down": "F3"},
     "overlay_on": True,        # the widget over the game: monitoring, frames waiting, channel
-    "tint_on": True,           # green / red over DEAL / HIGH rows of the store in the game (Windows)
+    "tint_on": True,
+    "theme": "light",          # the app's windows: light, dark, or "system" (Windows' app mode)           # green / red over DEAL / HIGH rows of the store in the game (Windows)
     "overlay_pos": None,       # where it was left [x, y]; None = top left of the screen
     "inventory_region": None,  # the item inventory window; None = find it automatically
     "chat_region": None,       # the chat messages (for megaphones); None = find it automatically

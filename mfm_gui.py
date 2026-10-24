@@ -261,8 +261,8 @@ class Tooltip:
             tw.attributes("-topmost", True)
         except tk.TclError:
             pass
-        tk.Label(tw, text=self.text, justify="left", wraplength=self.wrap, background="#fffbe6",
-                 foreground="#222", relief="solid", borderwidth=1, padx=8, pady=5,
+        tk.Label(tw, text=self.text, justify="left", wraplength=self.wrap, background=pc("#fffbe6"),
+                 foreground=pc("#222"), relief="solid", borderwidth=1, padx=8, pady=5,
                  font="TkTooltipFont").pack()
 
     def _pos(self) -> tuple[int, int]:
@@ -486,13 +486,13 @@ def make_tree(parent, cols) -> ttk.Treeview:
     # a watched item for sale: the whole row in bold red. Configured first, so its text
     # colour wins over every other row's (deal, high, a megaphone's own colour), while
     # the row keeps its own background
-    tree.tag_configure("watch", foreground=WATCH_FG, font="MfmBold")
-    tree.tag_configure("deal", background="#d5f2dc", foreground="#145c2c")
-    tree.tag_configure("high", background="#fadad7", foreground="#8c1d16")
-    tree.tag_configure("unknown", foreground="#8a8a8a")
-    tree.tag_configure("sold", foreground="#9a9a9a", background="#f0f0f0")
-    tree.tag_configure("ignored", foreground="#a0a0a0")
-    tree.tag_configure("outlier", foreground="#a0661a", background="#fbf3e4")
+    tree.tag_configure("watch", foreground=pc(WATCH_FG), font="MfmBold")
+    tree.tag_configure("deal", background=pc("#d5f2dc"), foreground=pc("#145c2c"))
+    tree.tag_configure("high", background=pc("#fadad7"), foreground=pc("#8c1d16"))
+    tree.tag_configure("unknown", foreground=pc("#8a8a8a"))
+    tree.tag_configure("sold", foreground=pc("#9a9a9a"), background=pc("#f0f0f0"))
+    tree.tag_configure("ignored", foreground=pc("#a0a0a0"))
+    tree.tag_configure("outlier", foreground=pc("#a0661a"), background=pc("#fbf3e4"))
     tree.frame = frame
     enable_multiselect(tree)
     return tree
@@ -763,6 +763,104 @@ class ItemSearch(ttk.Frame):
             self.on_return()
         return "break"
 
+
+
+# ------------------------------------------------------------------ theme
+# Light is the platform's own look. Dark is ttk's "clam" theme coloured dark, the
+# option database's defaults for every classic Tk widget made after it, and pc() for
+# the colours the code sets itself. Chosen once at start (apply_theme): the option
+# database only reaches widgets made after it, so a change takes a restart.
+DARK = False
+DARK_UI = {"bg": "#1e1f22", "panel": "#2b2d31", "field": "#17181b", "fg": "#e3e3e3",
+           "dim": "#9aa0a6", "border": "#3d4046", "select": "#2f5d9e", "active": "#383b41"}
+
+
+def windows_dark() -> bool:
+    """Windows set to dark for apps (Settings > Personalization > Colors)."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as k:
+            return winreg.QueryValueEx(k, "AppsUseLightTheme")[0] == 0
+    except (OSError, ImportError):
+        return False
+
+
+def pc(colour: str) -> str:
+    """A colour the code sets, for the theme in use: as it is when light; when dark,
+    with its lightness turned over and its hue kept, so a pale row background turns
+    dark and dark text light, while mid tones (a red warning bar) stay much the same."""
+    if not DARK or not colour.startswith("#") or len(colour) not in (4, 7):
+        return colour
+    import colorsys
+    c = colour[1:] if len(colour) == 7 else "".join(ch * 2 for ch in colour[1:])
+    h, l, s_ = colorsys.rgb_to_hls(*(int(c[i:i + 2], 16) / 255 for i in (0, 2, 4)))
+    return "#%02x%02x%02x" % tuple(round(v * 255) for v in colorsys.hls_to_rgb(h, 1 - l * 0.92, s_))
+
+
+def _dark_title_bar(w) -> None:
+    """Ask Windows (10 20H1+) for a dark title bar on a window."""
+    try:
+        import ctypes
+        on = ctypes.c_int(1)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(ctypes.windll.user32.GetParent(w.winfo_id()), 20,
+                                                   ctypes.byref(on), ctypes.sizeof(on))
+    except Exception:
+        pass
+
+
+def apply_theme(root, cfg: dict) -> None:
+    """Set the theme from cfg["theme"] ("light", "dark" or "system", following Windows'
+    app mode), before any window is built."""
+    global DARK
+    mode = cfg.get("theme", "light")
+    DARK = mode == "dark" or (mode == "system" and windows_dark())
+    if not DARK:
+        return
+    t = DARK_UI
+    for pattern, value in (
+            ("*Background", t["bg"]), ("*Foreground", t["fg"]), ("*activeBackground", t["active"]),
+            ("*activeForeground", t["fg"]), ("*selectBackground", t["select"]),
+            ("*selectForeground", "#ffffff"), ("*insertBackground", t["fg"]),
+            ("*highlightBackground", t["bg"]), ("*highlightColor", t["border"]),
+            ("*troughColor", t["field"]), ("*disabledForeground", t["dim"]), ("*selectColor", t["field"]),
+            ("*Entry.Background", t["field"]), ("*Text.Background", t["field"]),
+            ("*Listbox.Background", t["field"]), ("*Spinbox.Background", t["field"]),
+            ("*Spinbox.buttonBackground", t["panel"]), ("*Menu.Background", t["panel"]),
+            ("*Menu.activeBackground", t["select"]), ("*TCombobox*Listbox.background", t["field"]),
+            ("*TCombobox*Listbox.foreground", t["fg"]), ("*TCombobox*Listbox.selectBackground", t["select"])):
+        root.option_add(pattern, value)
+    root.configure(background=t["bg"])
+    style = ttk.Style(root)
+    style.theme_use("clam")
+    style.configure(".", background=t["bg"], foreground=t["fg"], fieldbackground=t["field"],
+                    bordercolor=t["border"], darkcolor=t["panel"], lightcolor=t["panel"],
+                    troughcolor=t["field"], selectbackground=t["select"], selectforeground="#ffffff",
+                    insertcolor=t["fg"], arrowcolor=t["fg"], focuscolor=t["border"],
+                    indicatorbackground=t["field"], indicatorforeground=t["fg"])
+    style.map(".", background=[("disabled", t["bg"]), ("active", t["active"])],
+              foreground=[("disabled", t["dim"])])
+    style.configure("TButton", background=t["panel"])
+    style.map("TButton", background=[("pressed", t["select"]), ("active", t["active"])])
+    style.configure("Treeview", background=t["field"], fieldbackground=t["field"], foreground=t["fg"])
+    style.map("Treeview", background=[("selected", t["select"])], foreground=[("selected", "#ffffff")])
+    style.configure("Treeview.Heading", background=t["panel"], foreground=t["fg"])
+    style.map("Treeview.Heading", background=[("active", t["active"])])
+    style.configure("TNotebook", background=t["bg"])
+    style.configure("TNotebook.Tab", background=t["panel"], foreground=t["dim"])
+    style.map("TNotebook.Tab", background=[("selected", t["bg"])], foreground=[("selected", t["fg"])])
+    style.map("TCombobox", fieldbackground=[("readonly", t["field"])], foreground=[("readonly", t["fg"])],
+              selectbackground=[("readonly", t["field"])], selectforeground=[("readonly", t["fg"])])
+    style.configure("TLabelframe.Label", background=t["bg"], foreground=t["fg"])
+    for cb in ("TCheckbutton", "TRadiobutton"):      # ticked: blue with a white tick
+        style.map(cb, indicatorbackground=[("selected", t["select"]), ("pressed", t["active"])],
+                  indicatorforeground=[("selected", "#ffffff")])
+    for sb in ("TScrollbar", "Vertical.TScrollbar", "Horizontal.TScrollbar"):
+        style.configure(sb, background=t["panel"], troughcolor=t["field"], arrowcolor=t["fg"],
+                        bordercolor=t["border"], lightcolor=t["panel"], darkcolor=t["panel"])
+        style.map(sb, background=[("active", t["active"]), ("pressed", t["select"])])
+    root.bind_class("Toplevel", "<Map>", lambda e: _dark_title_bar(e.widget), add="+")
+    root.after_idle(lambda: _dark_title_bar(root))
 
 # ------------------------------------------------------------------ overlay widget
 # Drawn on one canvas (rounded panel and chips, icons from lines and polygons), in the
@@ -1194,6 +1292,7 @@ class App:
         sys.setswitchinterval(0.001)
         self.root = root
         self.cfg = mfm.load_config()
+        apply_theme(root, self.cfg)             # before any window is built
         mfm.CAPTURE_CFG = self.cfg              # how the screen is read (game window or whole screen)
         self.con = mfm.db()
         self.events: queue.Queue = queue.Queue()
@@ -1276,7 +1375,7 @@ class App:
         style.configure("TButton", padding=(10, 3), width=-6)   # size to the label (min 6 chars)
         style.configure("Treeview", rowheight=34)
         style.configure("Search.Treeview", rowheight=30)
-        style.configure("Status.TLabel", foreground="#555")
+        style.configure("Status.TLabel", foreground=pc("#555"))
         style.configure("Big.TLabel", font="MfmBig")
         style.configure("Bold.TLabel", font="MfmBold")
         style.configure("Treeview.Heading", font="TkHeadingFont")
@@ -1301,7 +1400,7 @@ class App:
         b = ttk.Button(bar, text="Shared Database", command=self.shared_dialog)
         b.pack(side="right", padx=(0, 6))
         tip("Share prices and megaphones with other players through a server one of you runs.", b)
-        self.shared_dot = tk.Label(bar, text="●", font=("TkDefaultFont", 14), foreground="#c62828")
+        self.shared_dot = tk.Label(bar, text="●", font=("TkDefaultFont", 14), foreground=pc("#c62828"))
         self.shared_dot.pack(side="right", padx=(0, 2))
         tip("Green: connected to the Shared Database and syncing. Red: not connected.", self.shared_dot)
         # left of the button: a green arrow while monitoring, a red square when stopped
@@ -1343,7 +1442,7 @@ class App:
             self.root.bind_all("<Command-n>", lambda e: self.next_shop())
 
         # red warning when prices.db gets big (shown by check_db_size)
-        self.size_warn = tk.Label(self.root, background="#c62828", foreground="white", anchor="w",
+        self.size_warn = tk.Label(self.root, background=pc("#c62828"), foreground="white", anchor="w",
                                   padx=10, pady=5, cursor="hand2", font="MfmBold", justify="left")
         self.size_warn.bind("<Button-1>", lambda e: self.settings())
         self.nb = ttk.Notebook(self.root)
@@ -1357,7 +1456,7 @@ class App:
         self.shop_title = ttk.Label(left, text="Waiting for a shop…", style="Big.TLabel")
         self.shop_title.pack(anchor="w", pady=(0, 6))
         self.live = make_tree(left, COLS + ("notes", "saved"))
-        self.live.tag_configure("dupe", foreground="#7a7a7a")
+        self.live.tag_configure("dupe", foreground=pc("#7a7a7a"))
         self.live.frame.pack(fill="both", expand=True)
         self.live.bind("<Double-1>", lambda e: self.open_history(self.live))
 
@@ -1418,7 +1517,7 @@ class App:
         legend.pack(anchor="w", pady=(2, 6))
         self.legend_icon = ImageTk.PhotoImage(self._legend_badge())
         ttk.Label(legend, image=self.legend_icon).pack(side="left")
-        ttk.Label(legend, foreground="#666",
+        ttk.Label(legend, foreground=pc("#666"),
                   text=" = name not in the item list. Fix it in the Review tab."
                   ).pack(side="left")
         self._build_item_filter(items)
@@ -1455,7 +1554,7 @@ class App:
         self.status.pack(side="bottom", fill="x", before=self.nb)
         # red, above the status bar: something to change in the game so it can be read
         self.hints: dict[str, str] = {}
-        self.hint_bar = tk.Label(self.root, background="#c62828", foreground="white", anchor="w",
+        self.hint_bar = tk.Label(self.root, background=pc("#c62828"), foreground="white", anchor="w",
                                  padx=10, pady=4, font="MfmBold", justify="left")
         self._set_status()
         self._update_stats(None, None)
@@ -1493,9 +1592,9 @@ class App:
         c = self.run_mark
         c.delete("all")
         if running:
-            c.create_polygon(4, 2, 16, 9, 4, 16, fill="#2e7d32", outline="#1b5e20")
+            c.create_polygon(4, 2, 16, 9, 4, 16, fill=pc("#2e7d32"), outline=pc("#1b5e20"))
         else:
-            c.create_rectangle(3, 3, 15, 15, fill="#c62828", outline="#8e0000")
+            c.create_rectangle(3, 3, 15, 15, fill=pc("#c62828"), outline=pc("#8e0000"))
 
     def stop(self):
         aborting = False
@@ -1733,7 +1832,7 @@ class App:
         win.resizable(False, False)
         if dropdown:
             win.overrideredirect(True)            # a plain panel under the box, like a list
-            win.configure(background="#888")
+            win.configure(background=pc("#888"))
             body = ttk.Frame(win, padding=(8, 8, 8, 6))
             body.pack(padx=1, pady=1)
         else:
@@ -1759,13 +1858,13 @@ class App:
         buttons = []
         for n in range(1, count + 1):
             b = tk.Button(grid, text=str(n), width=5, padx=2, pady=2, relief="groove",
-                          highlightthickness=2, highlightcolor="#1e88e5",
+                          highlightthickness=2, highlightcolor=pc("#1e88e5"),
                           command=lambda n=n: pick(str(n)))
             b.normal_bg = b.cget("background")
             if cur == str(n):
-                b.config(background="#1e88e5", foreground="white", activebackground="#1565c0",
+                b.config(background=pc("#1e88e5"), foreground="white", activebackground=pc("#1565c0"),
                          activeforeground="white")
-                b.normal_bg = "#1e88e5"
+                b.normal_bg = pc("#1e88e5")
             b.grid(row=(n - 1) // cols, column=(n - 1) % cols, padx=1, pady=1)
             buttons.append(b)
         bottom = ttk.Frame(body, padding=(0, 6, 0, 0) if dropdown else (14, 8, 14, 12))
@@ -1807,8 +1906,8 @@ class App:
             return None
 
         def focus_in(b):
-            if b.normal_bg != "#1e88e5":
-                b.config(background="#cfe3fa")
+            if b.normal_bg != pc("#1e88e5"):
+                b.config(background=pc("#cfe3fa"))
 
         for i, b in enumerate(buttons):
             for key in ("Left", "Right", "Up", "Down"):
@@ -2008,7 +2107,7 @@ class App:
                               + (f", {p['sold']} sold" if p.get("sold") else "")
                               + (f", {deals} deal{'s' if deals != 1 else ''}" if deals else ""))
         if deals:
-            self.recent.itemconfig(0, foreground="#145c2c")
+            self.recent.itemconfig(0, foreground=pc("#145c2c"))
         self.shop_title.config(text=self.shop_title.cget("text") + "  ·  closed")
         self.refresh_tables()
         self.fetch_icons_async([self.live.set(k, "item") for k in self.live.get_children()])
@@ -2129,10 +2228,10 @@ class App:
             win.geometry("620x300")
             head = ttk.Frame(win, padding=(14, 12, 14, 6))
             head.pack(fill="x")
-            ttk.Label(head, text="⚠", foreground="#c8352b", font=("TkDefaultFont", 22)).pack(side="left")
+            ttk.Label(head, text="⚠", foreground=pc("#c8352b"), font=("TkDefaultFont", 22)).pack(side="left")
             ttk.Label(head, text="  Something went wrong", style="Big.TLabel").pack(side="left")
             box = tk.Text(win, wrap="word", height=8, relief="flat", padx=10, pady=8,
-                          background="#fbefee", font="TkDefaultFont")
+                          background=pc("#fbefee"), font="TkDefaultFont")
             box.pack(fill="both", expand=True, padx=14)
             btns = ttk.Frame(win, padding=(14, 8, 14, 12))
             btns.pack(fill="x")
@@ -2503,7 +2602,7 @@ class App:
         tip("Only items an NPC shop sells.", cb)
         b = ttk.Button(bar, text="Clear", command=self.clear_item_filter)
         b.pack(side="left", padx=(10, 0))
-        self.f_count = ttk.Label(bar, foreground="#666")
+        self.f_count = ttk.Label(bar, foreground=pc("#666"))
         self.f_count.pack(side="left", padx=(10, 0))
         self._filter_job = None
 
@@ -2580,7 +2679,7 @@ class App:
         head = ttk.Frame(top_half)
         head.pack(fill="x", pady=(0, 4))
         ttk.Label(head, text="Watched items", style="Bold.TLabel").pack(side="left")
-        ttk.Label(head, foreground="#555", text="  Get an alert when one of these items is for sale. "
+        ttk.Label(head, foreground=pc("#555"), text="  Get an alert when one of these items is for sale. "
                   "Leave the max price empty for any price. Words: megaphones that say them are "
                   "highlighted.").pack(side="left")
         add = ttk.Frame(top_half)
@@ -2629,7 +2728,7 @@ class App:
         head = ttk.Frame(low_half)
         head.pack(fill="x", pady=(0, 4))
         ttk.Label(head, text="Watched listings", style="Bold.TLabel").pack(side="left")
-        ttk.Label(head, foreground="#555", text="  Get an alert when one of these listings is for "
+        ttk.Label(head, foreground=pc("#555"), text="  Get an alert when one of these listings is for "
                   "sale again. Right-click a listing and choose Watch this listing.").pack(side="left")
         ttk.Button(head, text="Remove selected", command=self.remove_watched_listing).pack(side="right")
         self.wlist = make_tree(low_half, ("item", "notes", "each", "status", "shop", "player", "map",
@@ -2654,7 +2753,7 @@ class App:
                         command=self._save_sound_prefs).pack(side="left", padx=(10, 0))
         ttk.Button(bottom, text="Test sound", command=self.test_sound).pack(side="left", padx=(10, 0))
         ttk.Button(bottom, text="Choose sound", command=self.choose_sound).pack(side="left", padx=4)
-        self.sound_lbl = ttk.Label(bottom, foreground="#666")
+        self.sound_lbl = ttk.Label(bottom, foreground=pc("#666"))
         self.sound_lbl.pack(side="left", padx=6)
         self.refresh_alerts()
         self.refresh_watched_listings()
@@ -2693,7 +2792,7 @@ class App:
             self.shared.stop()            # the server ended the sign-in: ask for the password
             self.shared = None
         self.shared_state = st
-        self.shared_dot.config(foreground="#2e7d32" if st.get("ok") else "#c62828")
+        self.shared_dot.config(foreground=pc("#2e7d32") if st.get("ok") else pc("#c62828"))
         dlg = getattr(self, "shared_win", None)
         if dlg is not None and dlg.winfo_exists():
             dlg.refresh()
@@ -2730,14 +2829,14 @@ class App:
         ttk.Label(form, text="Server address:").grid(row=0, column=0, sticky="w")
         e1 = ttk.Entry(form, textvariable=addr, width=44)
         e1.grid(row=0, column=1, sticky="w", padx=6, pady=2)
-        ttk.Label(form, text="e.g. 203.0.113.5:8765", foreground="#777").grid(row=0, column=2, sticky="w")
+        ttk.Label(form, text="e.g. 203.0.113.5:8765", foreground=pc("#777")).grid(row=0, column=2, sticky="w")
         ttk.Label(form, text="User name:").grid(row=1, column=0, sticky="w")
         e2 = ttk.Entry(form, textvariable=user, width=44)
         e2.grid(row=1, column=1, sticky="w", padx=6, pady=2)
         ttk.Label(form, text="Password:").grid(row=2, column=0, sticky="w")
         e3 = ttk.Entry(form, textvariable=pw, width=44, show="•")
         e3.grid(row=2, column=1, sticky="w", padx=6, pady=2)
-        pw_note = ttk.Label(form, foreground="#777")
+        pw_note = ttk.Label(form, foreground=pc("#777"))
         pw_note.grid(row=2, column=2, sticky="w")
         row = ttk.Frame(body)
         row.pack(fill="x", pady=(10, 0))
@@ -2760,7 +2859,7 @@ class App:
             st = self.shared_state
             running = self.shared is not None
             saved = mfm_shared.load_login()
-            dot.config(foreground="#2e7d32" if st.get("ok") else "#c62828")
+            dot.config(foreground=pc("#2e7d32") if st.get("ok") else pc("#c62828"))
             text = st.get("text", "")
             if running and st.get("ok"):
                 text = (f"Connected to {st.get('server') or 'the server'}"
@@ -2900,7 +2999,7 @@ class App:
                 self.root.after_cancel(self._mega_filter_job)
             self._mega_filter_job = self.root.after(250, self._refilter_megaphones)
         self.mega_filter.trace_add("write", filter_changed)
-        self.mega_status = ttk.Label(top, foreground="#666")
+        self.mega_status = ttk.Label(top, foreground=pc("#666"))
         self.mega_status.pack(side="right")
         # right: what the OCR sees (the chat window, megaphones outlined)
         side = ttk.Frame(tab, padding=(10, 0, 0, 0), width=300)
@@ -2909,7 +3008,7 @@ class App:
         ttk.Label(side, text="What the OCR sees").pack(anchor="w")
         self.mega_preview = ttk.Label(side, relief="solid", anchor="center", text="no capture yet")
         self.mega_preview.pack(fill="x", pady=(2, 8), ipady=4)
-        self.mega_seen = ttk.Label(side, justify="left", foreground="#555", wraplength=280)
+        self.mega_seen = ttk.Label(side, justify="left", foreground=pc("#555"), wraplength=280)
         self.mega_seen.pack(anchor="w")
         panes = ttk.PanedWindow(tab, orient="vertical")
         panes.pack(fill="both", expand=True)
@@ -2968,7 +3067,7 @@ class App:
         img = p["image"].convert("RGB").copy()
         d = ImageDraw.Draw(img)
         for box, color in p["marks"]:
-            d.rectangle((box[0] + 1, box[1], box[2] - 1, box[3] - 1), outline="#e53935", width=2)
+            d.rectangle((box[0] + 1, box[1], box[2] - 1, box[3] - 1), outline=pc("#e53935"), width=2)
         img.thumbnail((280, 400))
         self.mega_preview_img = ImageTk.PhotoImage(img)
         self.mega_preview.config(image=self.mega_preview_img, text="")
@@ -3270,12 +3369,12 @@ class App:
         # My Inventory sits at the far right of the tab row: a one-tab notebook placed
         # there, whose page is shown over the main notebook's page
         style = ttk.Style()
-        normal_bg = style.lookup("TNotebook.Tab", "background") or "#bab5ab"
+        normal_bg = style.lookup("TNotebook.Tab", "background") or pc("#bab5ab")
         for name in ("Dim.TNotebook", "DimInv.TNotebook"):
             style.configure(name, **{k: style.lookup("TNotebook", k) for k in ("background",)
                                      if style.lookup("TNotebook", k)})
             style.map(name + ".Tab", background=[("selected", normal_bg), ("!selected", normal_bg)],
-                      lightcolor=[("selected", "#cfcdc8"), ("!selected", "#cfcdc8")],
+                      lightcolor=[("selected", pc("#cfcdc8")), ("!selected", pc("#cfcdc8"))],
                       expand=[("selected", (0, 0, 0, 0))])
         # the lone My Inventory tab, when not shown: the height of an unselected tab
         style.map("DimInv.TNotebook.Tab", padding=[("selected", style.lookup("TNotebook.Tab", "padding") or 2)])
@@ -3370,7 +3469,7 @@ class App:
             w.pack(anchor="w")
         for w in (self.worth_listed, self.worth_profit):
             w.pack(anchor="w")
-        self.worth_note = ttk.Label(worth, foreground="#666")
+        self.worth_note = ttk.Label(worth, foreground=pc("#666"))
         self.worth_note.pack(side="right", anchor="s")
         tip("The lowest and highest prices seen for the items you own, added up, less 3% tax.",
             self.worth_range)
@@ -3432,7 +3531,7 @@ class App:
             return
         # keep the right edge unbroken where the My Inventory tab meets the page: the
         # page's rounded top-right corner would leave a notch there
-        edge.configure(background=style.lookup("TNotebook", "bordercolor") or "#9e9a91")
+        edge.configure(background=style.lookup("TNotebook", "bordercolor") or pc("#9e9a91"))
         edge.place(in_=nb, relx=1.0, x=-1, y=main[0], width=1,
                    height=main[1] - main[0] if shown else 1)
         tk.Misc.lift(edge)
@@ -3443,7 +3542,7 @@ class App:
             return
         # a selected tab's left border stops at the page's top border line
         if last is not None and main[1] - main[0] > 1:
-            corner.configure(background=style.lookup("TNotebook", "lightcolor") or "#eeebe7")
+            corner.configure(background=style.lookup("TNotebook", "lightcolor") or pc("#eeebe7"))
             corner.place(in_=nb, relx=1.0, x=-(last + 1), y=main[0] + 1, width=1,
                          height=main[1] - main[0] - 1)
             tk.Misc.lift(corner)
@@ -3459,10 +3558,10 @@ class App:
             line.place_forget()
             top.place_forget()
             return
-        border = style.lookup("TNotebook", "bordercolor") or "#9e9a91"
-        light = style.lookup("TNotebook", "lightcolor") or "#eeebe7"
-        dim_light = style.lookup("TNotebook.Tab", "lightcolor") or "#cfcdc8"
-        bg = style.lookup("TNotebook", "background") or "#dcdad5"
+        border = style.lookup("TNotebook", "bordercolor") or pc("#9e9a91")
+        light = style.lookup("TNotebook", "lightcolor") or pc("#eeebe7")
+        dim_light = style.lookup("TNotebook.Tab", "lightcolor") or pc("#cfcdc8")
+        bg = style.lookup("TNotebook", "background") or pc("#dcdad5")
         x0, x1 = xs[0], xs[-1]
         # the page border, from just inside the notebook's left edge
         lx = max(x0, 1)
@@ -3804,7 +3903,7 @@ class App:
         ttk.Label(top, text="Open your Item Inventory in the game. Its items show here; select the "
                   "ones you want and click Add.",
                   wraplength=560, justify="left").pack(side="left")
-        ttk.Label(top, text="Not found? Settings → Reading → Window detection.", foreground="#666").pack(side="right")
+        ttk.Label(top, text="Not found? Settings → Reading → Window detection.", foreground=pc("#666")).pack(side="right")
         body = ttk.Frame(win, padding=(12, 4, 12, 4))
         body.pack(fill="both", expand=True)
         right = ttk.Frame(body)
@@ -3812,18 +3911,18 @@ class App:
         ttk.Label(right, text="What's being read").pack(anchor="w")
         win.preview = ttk.Label(right, text="—", relief="solid", anchor="center", width=24)
         win.preview.pack(anchor="n", pady=(2, 6))
-        win.status = ttk.Label(right, foreground="#555", wraplength=220, justify="left",
+        win.status = ttk.Label(right, foreground=pc("#555"), wraplength=220, justify="left",
                                text="Loading item icons…")
         win.status.pack(anchor="w")
         left = ttk.Frame(body)
         left.pack(side="left", fill="both", expand=True)
-        ttk.Label(left, foreground="#555", wraplength=560, justify="left", text=(
+        ttk.Label(left, foreground=pc("#555"), wraplength=560, justify="left", text=(
             "Icons that couldn't be matched are highlighted. Enter = accept the suggestion · "
             "M = pick an item · Delete = remove. Your choice is remembered for next time."
             )).pack(anchor="w", pady=(0, 4))
         tree = make_tree(left, ("item", "qty", "tab", "match"))
         tree.column("item", width=240)
-        tree.tag_configure("review", background="#fff1dc")
+        tree.tag_configure("review", background=pc("#fff1dc"))
         tree.frame.pack(fill="both", expand=True)
         win.tree = tree
         win.rows = {}             # (tab, slot) -> scan result
@@ -4395,8 +4494,8 @@ class App:
         t.heading("count", text="Seen")
         t.column("message", stretch=True)
         t.frame.pack(fill="both", expand=True)
-        t.tag_configure("good", foreground="#145c2c")
-        t.tag_configure("weak", foreground="#8a6d1a")
+        t.tag_configure("good", foreground=pc("#145c2c"))
+        t.tag_configure("weak", foreground=pc("#8a6d1a"))
         self.mreview = t
         t.bind("<Return>", lambda e: self.mreview_accept())
         t.bind("<KP_Enter>", lambda e: self.mreview_accept())
@@ -4428,7 +4527,7 @@ class App:
         b.pack(side="left", padx=(12, 0))
         tip("Deletes every megaphone with something in this list (all of them, not only the "
             "ones shown). Nothing is added to the aliases.", b)
-        self.mreview_more = ttk.Label(bottom, foreground="#666")
+        self.mreview_more = ttk.Label(bottom, foreground=pc("#666"))
         self.mreview_more.pack(side="right")
         self.refresh_megaphone_review()
         # common shorthand ("att" = attack, "ohs" = one handed sword) as word aliases
@@ -4642,9 +4741,9 @@ class App:
         t = make_tree(win, ("aterm", "avalue", "atype"))
         t.column("avalue", stretch=True)
         t.column("atype", anchor="center")
-        t.tag_configure("new", foreground="#888")
-        t.tag_configure("ignored", foreground="#888")
-        t.tag_configure("words", foreground="#1f4e9a")
+        t.tag_configure("new", foreground=pc("#888"))
+        t.tag_configure("ignored", foreground=pc("#888"))
+        t.tag_configure("words", foreground=pc("#1f4e9a"))
         t.frame.pack(fill="both", expand=True, padx=10)
         NEW = "__new__"
         WP = mfm.WORDS_PREFIX
@@ -4823,9 +4922,9 @@ class App:
         self.review.column("time", width=140)
         self.review.column("shop", width=160)
         self.review.frame.pack(fill="both", expand=True)
-        self.review.tag_configure("good", foreground="#145c2c")
-        self.review.tag_configure("weak", foreground="#8a6d1a")
-        self.review.tag_configure("kept", foreground="#9a9a9a")
+        self.review.tag_configure("good", foreground=pc("#145c2c"))
+        self.review.tag_configure("weak", foreground=pc("#8a6d1a"))
+        self.review.tag_configure("kept", foreground=pc("#9a9a9a"))
         t = self.review
         t.bind("<Return>", lambda e: self.review_accept())
         t.bind("<KP_Enter>", lambda e: self.review_accept())
@@ -5400,7 +5499,7 @@ class App:
         """Settings section for the reference lists the app reads the game with."""
         box = ttk.LabelFrame(parent, text=" Game data ", padding=(10, 6))
         wrap = 850
-        grey = {"foreground": "#666", "wraplength": wrap, "justify": "left"}
+        grey = {"foreground": pc("#666"), "wraplength": wrap, "justify": "left"}
 
         def status_items():
             i = mfm.items_info()
@@ -5442,7 +5541,7 @@ class App:
                        command=lambda: self.download_meowdb(rows["items"], full=True, force=True, then=refresh))
         b.pack(side="left", padx=6)
         tip("Downloads the whole item and map lists again.", b)
-        ttk.Label(top, foreground="#666", wraplength=wrap - 300, justify="left", text=(
+        ttk.Label(top, foreground=pc("#666"), wraplength=wrap - 300, justify="left", text=(
             "Item and map lists from NiaMeowDB, with OSMS Data Explorer as a backup.")
                   ).pack(side="left", padx=(10, 0))
         search_icons = tk.BooleanVar(value=self.cfg.get("search_icons", True))
@@ -5475,7 +5574,7 @@ class App:
             top = ttk.Frame(f)
             top.pack(fill="x")
             ttk.Label(top, text=title, style="Bold.TLabel").pack(side="left")
-            rows[kind] = ttk.Label(top, text=fn(), foreground="#1f6f3a")
+            rows[kind] = ttk.Label(top, text=fn(), foreground=pc("#1f6f3a"))
             rows[kind].pack(side="left", padx=(10, 0))
             b = ttk.Frame(top)
             b.pack(side="right")
@@ -5502,7 +5601,7 @@ class App:
         bk.pack(fill="x", pady=(10, 0))
         bk_title = ttk.Label(bk, text="Backup source", style="Bold.TLabel")
         bk_title.pack(side="left")
-        rows["osms"] = ttk.Label(bk, text=status_osms(), foreground="#1f6f3a")
+        rows["osms"] = ttk.Label(bk, text=status_osms(), foreground=pc("#1f6f3a"))
         rows["osms"].pack(side="left", padx=(10, 0))
         tip("Items, maps and icons that NiaMeowDB doesn't have. Files in cache/: "
             "osms_items.json, osms_maps.json.", bk_title, rows["osms"])
@@ -5946,7 +6045,7 @@ class App:
         for key, (label, _) in mfm.SETTINGS_FILES.items():
             picks[key] = tk.BooleanVar(value=True)
             ttk.Checkbutton(win, text=label, variable=picks[key]).pack(anchor="w", padx=14, pady=1)
-        ttk.Label(win, foreground="#777", padding=(14, 6, 14, 0), text=(
+        ttk.Label(win, foreground=pc("#777"), padding=(14, 6, 14, 0), text=(
             "Pricing data and the item database are not affected.")).pack(anchor="w")
 
         def go():
@@ -6017,7 +6116,7 @@ class App:
             "exports them (mfm-server export-ocr) for training.", c2)
         row = ttk.Frame(box)
         row.pack(anchor="w", fill="x", pady=(2, 0))
-        counts = ttk.Label(row, foreground="#555")
+        counts = ttk.Label(row, foreground=pc("#555"))
         counts.pack(side="left")
         ttk.Button(row, text="Check lines", command=self.ocr_lines_dialog).pack(side="right")
 
@@ -6052,7 +6151,7 @@ class App:
         for val, text in (("unsure", "To check"), ("auto", "Agreed"), ("fixed", "Checked"), ("skip", "Skipped")):
             ttk.Radiobutton(top, text=text, value=val, variable=which, command=lambda: load()).pack(side="left",
                                                                                               padx=(0, 10))
-        where = ttk.Label(top, foreground="#555")
+        where = ttk.Label(top, foreground=pc("#555"))
         where.pack(side="right")
         kind_names = {"all": "All", "chat": "Chat lines", "store": "Store names", "player": "Player names"}
         kind = tk.StringVar(value=kind_names["all"])
@@ -6060,12 +6159,12 @@ class App:
         kc.pack(side="right", padx=(0, 12))
         kc.bind("<<ComboboxSelected>>", lambda e: load())
         ttk.Label(top, text="Show:").pack(side="right", padx=(0, 4))
-        ttk.Label(win, foreground="#555", wraplength=900, justify="left", padding=(12, 0, 12, 4), text=(
+        ttk.Label(win, foreground=pc("#555"), wraplength=900, justify="left", padding=(12, 0, 12, 4), text=(
             "Type exactly what the picture says (keep spaces, brackets and capitals as shown), then press "
             "Enter. Skip leaves a line out of training: use it when you can't tell what it says.")).pack(anchor="w")
         pic = ttk.Label(win, relief="solid", anchor="w", padding=4)
         pic.pack(fill="x", padx=12, pady=(4, 6))
-        read_lbl = ttk.Label(win, foreground="#777", padding=(12, 0))
+        read_lbl = ttk.Label(win, foreground=pc("#777"), padding=(12, 0))
         read_lbl.pack(anchor="w")
         text = tk.StringVar()
         entry = ttk.Entry(win, textvariable=text, font=("TkFixedFont", 14))
@@ -6181,7 +6280,7 @@ class App:
         else:
             note = ""
         if note:
-            ttk.Label(box, foreground="#666", wraplength=330, justify="left", text=note
+            ttk.Label(box, foreground=pc("#666"), wraplength=330, justify="left", text=note
                       ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 4))
         if not usable:
             cb.state(["disabled"])
@@ -6240,7 +6339,7 @@ class App:
         """Settings → Reading → Window detection: each capture area, found automatically or drawn
         by hand (with its coordinates), a button to draw it and one to go back to automatic."""
         box = ttk.LabelFrame(win, text=" Window detection ", padding=(10, 4, 10, 6))
-        ttk.Label(box, foreground="#666", wraplength=700, justify="left", text=(
+        ttk.Label(box, foreground=pc("#666"), wraplength=700, justify="left", text=(
             "Each area is found on the screen by itself. If one isn't found, draw it: the app then "
             "reads only that part (coordinates in pixels of what's read: the game window, or the whole screen).")).grid(
             row=0, column=0, columnspan=4, sticky="w", pady=(0, 4))
@@ -6259,7 +6358,7 @@ class App:
         te = ttk.Entry(cap, textvariable=title, width=16)
         te.pack(side="left")
         tip("The game's window is found by this in its title.", te)
-        now = ttk.Label(box, foreground="#555")
+        now = ttk.Label(box, foreground=pc("#555"))
         now.grid(row=101, column=0, columnspan=4, sticky="w", pady=(2, 0))
 
         def capture_changed(*_):
@@ -6290,10 +6389,10 @@ class App:
                 drawn_on = modes.get(key, "screen")
                 if r and drawn_on != mode:
                     lab.config(text="Drawn on the " + ("game window" if drawn_on == "window" else "whole screen")
-                               + ": not used now", foreground="#b26a00")
+                               + ": not used now", foreground=pc("#b26a00"))
                 else:
                     lab.config(text=("Manual: " + area_text(r)) if r else "Automatic",
-                               foreground="#1565c0" if r else "#555")
+                               foreground=pc("#1565c0") if r else pc("#555"))
 
         def auto(key=None):
             for k, _, _ in AREAS:
@@ -6325,7 +6424,7 @@ class App:
         b = ttk.Button(box, text="Auto Detection", command=auto)
         b.grid(row=len(AREAS) + 1, column=0, sticky="w", pady=(6, 0))
         tip("Forget every area you drew and find them all automatically.", b)
-        ttk.Label(box, foreground="#666", text="Forgets every drawn area.").grid(
+        ttk.Label(box, foreground=pc("#666"), text="Forgets every drawn area.").grid(
             row=len(AREAS) + 1, column=1, columnspan=3, sticky="w", padx=(10, 0), pady=(6, 0))
         refresh()
         return box
@@ -6453,7 +6552,7 @@ class App:
         tip(f"The folder for {mfm.ARCHIVE_NAME}.", ea, bb)
         r3 = ttk.Frame(ret)
         r3.pack(fill="x", pady=(3, 0))
-        size_lbl = ttk.Label(r3, foreground="#666")
+        size_lbl = ttk.Label(r3, foreground=pc("#666"))
 
         def ret_cfg():
             try:
@@ -6475,7 +6574,7 @@ class App:
                 old = 0
             size_lbl.config(text=f"Database {size / 1048576:,.1f} MB  ·  {old:,} to clean up  ·  "
                                  f"shop photos {mfm.shots_size() / 1048576:,.0f} MB",
-                            foreground="#c62828" if size > mfm.DB_WARN_BYTES else "#666")
+                            foreground=pc("#c62828") if size > mfm.DB_WARN_BYTES else pc("#666"))
 
         def clean_now():
             c = ret_cfg()
@@ -6551,6 +6650,16 @@ class App:
             "orange for fair, red for HIGH, dark red for far above it, light blue for not enough data "
             "yet (?). Sold rows are left plain. Clicks go through it, "
             "and the app's screenshots leave it out. Whole-screen reading only (Windows).", cb)
+        themes = {"light": "Light", "dark": "Dark", "system": "Follow Windows"}
+        theme = tk.StringVar(value=themes.get(self.cfg.get("theme", "light"), "Light"))
+        tr = ttk.Frame(ov_box)
+        tr.pack(anchor="w", pady=(6, 0))
+        ttk.Label(tr, text="App theme").pack(side="left")
+        tcb = ttk.Combobox(tr, textvariable=theme, values=list(themes.values()), state="readonly", width=15)
+        tcb.pack(side="left", padx=(6, 0))
+        ttk.Label(tr, text="(after restart)", foreground=pc("#666")).pack(side="left", padx=(6, 0))
+        tip("The app's own windows: light, dark, or as Windows is set for apps. Takes effect "
+            "the next time the app opens.", tcb)
 
         # ---- updates (under the channel picker)
         upd = ttk.LabelFrame(gen, text=" Updates ", padding=(10, 2, 10, 6))
@@ -6564,9 +6673,13 @@ class App:
         bu = ttk.Button(ru, text="Check for updates", command=lambda: self.check_for_updates(True, win))
         bu.pack(side="left")
         tip("Looks for a new version now.", bu)
-        ttk.Label(ru, text=f"You have version {mfm.VERSION}", foreground="#666").pack(side="left", padx=(8, 0))
+        ttk.Label(ru, text=f"You have version {mfm.VERSION}", foreground=pc("#666")).pack(side="left", padx=(8, 0))
 
         def save():
+            new_theme = {v: k for k, v in themes.items()}.get(theme.get(), "light")
+            if new_theme != self.cfg.get("theme", "light"):
+                self.cfg["theme"] = new_theme
+                self._set_status(f"App theme: {themes[new_theme]}, from the next time the app opens.")
             try:
                 for key, (v, typ) in vars_.items():
                     self.cfg[key] = typ(float(v.get())) if typ is int else float(v.get())
@@ -6692,7 +6805,7 @@ class App:
         f = ttk.Frame(win, padding=(16, 14, 16, 12))
         f.pack(fill="both", expand=True)
         ttk.Label(f, text=f"Version {info['version']} is available", style="Big.TLabel").pack(anchor="w")
-        ttk.Label(f, text=f"You have version {mfm.VERSION}.", foreground="#555").pack(anchor="w", pady=(2, 8))
+        ttk.Label(f, text=f"You have version {mfm.VERSION}.", foreground=pc("#555")).pack(anchor="w", pady=(2, 8))
         if info.get("notes"):
             ttk.Label(f, text="What's new:").pack(anchor="w")
             tf = ttk.Frame(f)
@@ -6708,7 +6821,7 @@ class App:
         blocker = mfm.update_blocker() if info.get("asset_url") else \
             f"This release has no download for {mfm.update_platform()}."
         if blocker:
-            ttk.Label(f, text=blocker, wraplength=560, foreground="#c62828").pack(anchor="w", pady=(0, 8))
+            ttk.Label(f, text=blocker, wraplength=560, foreground=pc("#c62828")).pack(anchor="w", pady=(0, 8))
         btns = ttk.Frame(f)
         btns.pack(fill="x")
 
@@ -6820,8 +6933,8 @@ class App:
         info = ttk.Frame(head)
         info.pack(side="left", fill="x")
         ttk.Label(info, text="Free Market Tracker", style="Big.TLabel").pack(anchor="w")
-        ttk.Label(info, text=f"Version {mfm.VERSION}", foreground="#555").pack(anchor="w")
-        ttk.Label(info, foreground="#555", text="Free Market price tracker for MapleStory Classic World"
+        ttk.Label(info, text=f"Version {mfm.VERSION}", foreground=pc("#555")).pack(anchor="w")
+        ttk.Label(info, foreground=pc("#555"), text="Free Market price tracker for MapleStory Classic World"
                   ).pack(anchor="w")
         btns = ttk.Frame(win, padding=(16, 8, 16, 12))
         btns.pack(side="bottom", fill="x")          # packed first so it always keeps its room
@@ -6836,8 +6949,8 @@ class App:
         txt.pack(side="left", fill="both", expand=True)
         txt.tag_configure("h", font="MfmBold", spacing1=10, spacing3=4)
         txt.tag_configure("name", font="MfmBold")
-        txt.tag_configure("note", foreground="#555")
-        txt.tag_configure("link", foreground="#1a5fb4", underline=True)
+        txt.tag_configure("note", foreground=pc("#555"))
+        txt.tag_configure("link", foreground=pc("#1a5fb4"), underline=True)
         txt.tag_bind("link", "<Enter>", lambda e: txt.config(cursor="hand2"))
         txt.tag_bind("link", "<Leave>", lambda e: txt.config(cursor="arrow"))
         for i, (section, entries) in enumerate(CREDITS):
@@ -6998,8 +7111,8 @@ class App:
                              ("Channel:", mfm.channel_label(channel) if channel else "—"),
                              ("Time:", mfm.local_time(ts))):
             ttk.Label(row, text=label, style="Bold.TLabel").pack(side="left", padx=(0, 4))
-            ttk.Label(row, text=value, foreground="#555").pack(side="left", padx=(0, 14))
-        ttk.Label(win, padding=(12, 0, 12, 6), foreground="#777", text=(
+            ttk.Label(row, text=value, foreground=pc("#555")).pack(side="left", padx=(0, 14))
+        ttk.Label(win, padding=(12, 0, 12, 6), foreground=pc("#777"), text=(
             "What the OCR read is above; the screen it read from is below. Click the picture to zoom.")
             ).pack(anchor="w")
         pic = ttk.Label(win, cursor="hand2")
@@ -7044,9 +7157,9 @@ class App:
                    command=lambda: self.ask_range(item, win)).pack(side="right", padx=(0, 6))
         summary = ttk.Label(win, padding=(12, 0))
         summary.pack(anchor="w")
-        legend = ttk.Label(win, padding=(12, 0), foreground="#777")
+        legend = ttk.Label(win, padding=(12, 0), foreground=pc("#777"))
         legend.pack(anchor="w")
-        c = tk.Canvas(win, background="white", highlightthickness=0, height=260)
+        c = tk.Canvas(win, background=pc("#ffffff"), highlightthickness=0, height=260)
         c.pack(fill="both", expand=True, padx=12, pady=10)
         hint = ttk.Label(win, padding=(12, 0), justify="left", text=(
             "Right-click a sighting to see the shop as it was on screen, change its price or channel, "
@@ -7248,29 +7361,29 @@ class App:
 
             for frac in (0, 0.5, 1):
                 v = lo + span * frac
-                c.create_line(pad_l, y(v), w - pad_r, y(v), fill="#eeeeee")
-                c.create_text(pad_l - 8, y(v), text=mfm.fmt(v), anchor="e", fill="#777")
+                c.create_line(pad_l, y(v), w - pad_r, y(v), fill=pc("#eeeeee"))
+                c.create_text(pad_l - 8, y(v), text=mfm.fmt(v), anchor="e", fill=pc("#777"))
             if mkt:
-                c.create_line(pad_l, y(mkt), w - pad_r, y(mkt), fill="#999", dash=(4, 3))
-                c.create_text(w - pad_r, y(mkt) - 8, text="market", anchor="e", fill="#999")
+                c.create_line(pad_l, y(mkt), w - pad_r, y(mkt), fill=pc("#999"), dash=(4, 3))
+                c.create_text(w - pad_r, y(mkt) - 8, text="market", anchor="e", fill=pc("#999"))
             pts = [(x(i), y(r[1])) for i, r in enumerate(rows)]
             line = [p for p, o in zip(pts, out) if not o]
             if len(line) > 1:
-                c.create_line(*[v for p in line for v in p], fill="#3b6fd1", width=2)
+                c.create_line(*[v for p in line for v in p], fill=pc("#3b6fd1"), width=2)
             for (px, py), r, o in zip(pts, rows, out):
                 if o:     # outlier: hollow orange ring at the edge, labelled with its price
-                    c.create_oval(px - 5, py - 5, px + 5, py + 5, outline="#d9822b", width=2)
+                    c.create_oval(px - 5, py - 5, px + 5, py + 5, outline=pc("#d9822b"), width=2)
                     c.create_text(px + 8, py + (10 if py < h / 2 else -10), text=mfm.fmt(r[1]),
-                                  anchor="w", fill="#d9822b")
+                                  anchor="w", fill=pc("#d9822b"))
                     continue
                 if r[7]:  # sold: grey square
-                    c.create_rectangle(px - 4, py - 4, px + 4, py + 4, fill="#7a7a7a", outline="")
+                    c.create_rectangle(px - 4, py - 4, px + 4, py + 4, fill=pc("#7a7a7a"), outline="")
                     continue
                 v, _ = mfm.verdict(r[1], mkt, self.cfg["deal_threshold_pct"], bounds)
-                col = {"DEAL": "#1f9a4a", "HIGH": "#c8352b"}.get(v, "#3b6fd1")
+                col = {"DEAL": pc("#1f9a4a"), "HIGH": pc("#c8352b")}.get(v, pc("#3b6fd1"))
                 c.create_oval(px - 3, py - 3, px + 3, py + 3, fill=col, outline="")
-            c.create_text(pad_l, h - 10, text=mfm.local_time(rows[0][0]), anchor="w", fill="#777")
-            c.create_text(w - pad_r, h - 10, text=mfm.local_time(rows[-1][0]), anchor="e", fill="#777")
+            c.create_text(pad_l, h - 10, text=mfm.local_time(rows[0][0]), anchor="w", fill=pc("#777"))
+            c.create_text(w - pad_r, h - 10, text=mfm.local_time(rows[-1][0]), anchor="e", fill=pc("#777"))
 
         c.bind("<Configure>", draw)
         load()
